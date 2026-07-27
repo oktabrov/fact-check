@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Fact-Check is an evidence-led media literacy tool that checks claims against a transparent source list and links to the proof." />
+    <meta name="theme-color" content="#07121f" />
+    <link rel="canonical" href="https://fact-check.buzz/" />
+    <meta property="og:title" content="Fact-Check — Check the evidence before you share" />
+    <meta property="og:description" content="An evidence-led media literacy tool for checking claims through transparent, selected sources." />
+    <meta property="og:url" content="https://fact-check.buzz/" />
+    <title>Fact-Check — Check the evidence before you share</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="site-header" id="site-header">
+      <a class="brand" href="/" data-route aria-label="Fact-Check home">
+        <span class="brand-mark" aria-hidden="true"><i></i></span>
+        <span>Fact<span>-Check</span></span>
+      </a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="primary-nav">
+        <span></span><span></span><span></span>
+        <span class="sr-only">Open menu</span>
+      </button>
+      <nav class="primary-nav" id="primary-nav" aria-label="Main navigation">
+        <a href="/check" data-route>Check a claim</a>
+        <a href="/sources" data-route>Trusted sources</a>
+        <a href="/method" data-route>How it works</a>
+        <a href="/about" data-route>About</a>
+        <div class="nav-account" id="account-nav" aria-label="Account actions">
+          <a class="nav-login" href="/login" data-route>Log in</a>
+          <a class="nav-signup" href="/signup" data-route>Sign up</a>
+        </div>
+      </nav>
+    </header>
+    <main id="app" tabindex="-1"></main>
+    <footer class="site-footer">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <a class="brand" href="/" data-route aria-label="Fact-Check home">
+            <span class="brand-mark" aria-hidden="true"><i></i></span>
+            <span>Fact<span>-Check</span></span>
+          </a>
+          <p>Evidence before sharing. A transparent way to inspect what selected sources actually support.</p>
+        </div>
+        <div>
+          <p class="footer-label">Explore</p>
+          <a href="/check" data-route>Check a claim</a>
+          <a href="/sources" data-route>Trusted sources</a>
+          <a href="/method" data-route>Methodology</a>
+        </div>
+        <div>
+          <p class="footer-label">Contact</p>
+          <a href="mailto:oktabrovumrbek2023@gmail.com">oktabrovumrbek2023@gmail.com</a>
+          <a href="https://fact-check.buzz/" target="_blank" rel="noreferrer">fact-check.buzz ↗</a>
+          <a href="https://oktabrov.sbs/" target="_blank" rel="noreferrer">oktabrov.sbs ↗</a>
+          <a href="https://www.linkedin.com/in/umrbek-oktyabrov-abaa56355" target="_blank" rel="noreferrer">LinkedIn ↗</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <span>© <span id="year"></span> Fact-Check. Built by Umrbek Oktyabrov.</span>
+        <span>Built for media &amp; information literacy.</span>
+      </div>
+    </footer>
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

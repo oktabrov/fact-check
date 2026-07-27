@@ -1,0 +1,24 @@
+{
+  "name": "fact-check-buzz",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "An evidence-led media and information literacy web prototype.",
+  "scripts": {
+    "dev": "node --watch server.mjs",
+    "start": "node server.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:seed": "node scripts/seed-trusted-sources.mjs",
+    "db:setup": "npm run db:migrate && npm run db:seed"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.14"
+  }
+}
