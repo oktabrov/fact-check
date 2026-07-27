@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "An evidence-led media and information literacy web prototype.",
+  "description": "An evidence-led media and information literacy platform.",
   "scripts": {
     "dev": "node --watch server.mjs",
     "start": "node server.mjs",

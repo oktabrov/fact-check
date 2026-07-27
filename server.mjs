@@ -3,11 +3,12 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuth, createUserAuth } from "./lib/auth.mjs";
+import { categoryForKey, categoryLabel, categorySummary, isBlockedPlatformDomain, SOURCE_CATEGORIES } from "./lib/categories.mjs";
 import { assertDatabaseReady, createDatabasePool } from "./lib/db.mjs";
 import { PUBLIC_DIR, loadConfig } from "./lib/config.mjs";
-import { checkClaimWithOpenAI } from "./lib/openai.mjs";
+import { assessTrustedSourceWithOpenAI, checkClaimWithOpenAI, classifyClaimCategories } from "./lib/openai.mjs";
 import { trustedSourcesPdf } from "./lib/pdf.mjs";
-import { createSourceStore, sourceDomain } from "./lib/store.mjs";
+import { canonicalUrl, createSourceStore, selectSourcesForCategories, sourceDomain } from "./lib/store.mjs";
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -97,31 +98,36 @@ function domainsFromSources(sources) {
 
 async function publicSourceResponse(store, url) {
   const query = String(url.searchParams.get("q") || "").trim().toLowerCase();
-  const category = String(url.searchParams.get("category") || "").trim();
+  const categoryKey = String(url.searchParams.get("category") || "").trim();
   const snapshot = await store.snapshot();
   const activeSources = activeSourcesFromSnapshot(snapshot);
   const sources = activeSources.filter((source) => {
-    if (category && source.category !== category) return false;
+    if (categoryKey && source.categoryKey !== categoryKey) return false;
     if (!query) return true;
-    return [source.name, source.domain, source.category, source.rationale].join(" ").toLowerCase().includes(query);
+    return [source.name, source.domain, source.category, source.categoryKey, source.rationale].join(" ").toLowerCase().includes(query);
   });
-  const counts = new Map();
-  activeSources.forEach((source) => counts.set(source.category, (counts.get(source.category) || 0) + 1));
+  const categories = categorySummary(activeSources);
   return {
     version: snapshot.version,
     updatedAt: snapshot.updatedAt,
     sourceCount: activeSources.length,
-    categories: [...counts.keys()].sort(),
-    categoryCounts: [...counts.entries()].map(([name, count]) => ({ name, count })).sort((left, right) => left.name.localeCompare(right.name)),
+    categories,
+    categoryCounts: categories,
     sources,
   };
 }
 
-function createRateLimiter({ maxAttempts, windowMs }) {
+function createRateLimiter({ maxAttempts, windowMs, maxEntries = 5_000 }) {
   const attempts = new Map();
   return (request) => {
     const key = request.socket?.remoteAddress || "unknown";
     const now = Date.now();
+    if (!attempts.has(key) && attempts.size >= maxEntries) {
+      for (const [trackedKey, tracked] of attempts) {
+        if (tracked.resetAt <= now) attempts.delete(trackedKey);
+      }
+      if (attempts.size >= maxEntries) return false;
+    }
     const existing = attempts.get(key);
     if (!existing || existing.resetAt <= now) {
       attempts.set(key, { count: 1, resetAt: now + windowMs });
@@ -148,8 +154,12 @@ export function createApp(options = {}) {
     pool,
     production: config.nodeEnv === "production",
   });
+  const claimCategoryClassifier = options.classifyClaimCategories || classifyClaimCategories;
+  const evidenceChecker = options.checkClaimWithOpenAI || checkClaimWithOpenAI;
+  const sourceAssessor = options.assessTrustedSourceWithOpenAI || assessTrustedSourceWithOpenAI;
   const accountAttemptAllowed = createRateLimiter({ maxAttempts: 12, windowMs: 15 * 60 * 1000 });
   const adminAttemptAllowed = createRateLimiter({ maxAttempts: 8, windowMs: 15 * 60 * 1000 });
+  const claimAttemptAllowed = createRateLimiter({ maxAttempts: 8, windowMs: 15 * 60 * 1000 });
 
   async function requireAdmin(request, response) {
     if (!(await adminAuth.isAuthenticated(request))) {
@@ -157,6 +167,69 @@ export function createApp(options = {}) {
       return false;
     }
     return true;
+  }
+
+  async function assessSourceAdmission(body, existing = null, { manualReviewed = false, requireManualReview = true, allowIneligiblePreview = false } = {}) {
+    if (!config.apiKey) throw new Error("The source-admission AI key is not configured on this server.");
+    const candidateUrl = canonicalUrl(body.url || existing?.url || "");
+    const domain = sourceDomain(candidateUrl);
+    if (isBlockedPlatformDomain(domain)) {
+      throw new Error("Social-platform domains cannot be admitted to the automated trusted-source registry. Use an official first-party website instead.");
+    }
+
+    const candidate = {
+      name: String(body.name || existing?.name || "").trim(),
+      url: candidateUrl,
+      domain,
+      rationale: String(body.rationale || body.description || existing?.rationale || "").trim(),
+    };
+    if (candidate.name.length < 2) throw new Error("A source name is required.");
+    if (candidate.rationale.length < 8) throw new Error("Please add a short reason for trusting this source.");
+    const assessment = await sourceAssessor({
+      apiKey: config.apiKey,
+      model: config.model,
+      source: candidate,
+      categories: SOURCE_CATEGORIES,
+    });
+
+    const review = {
+      candidateUrl,
+      categoryKey: assessment.categoryKey,
+      eligible: assessment.eligible,
+      manualReviewed,
+      reason: assessment.reason || "No source-admission explanation was returned.",
+    };
+
+    if (!assessment.eligible || assessment.confidence !== "high") {
+      if (allowIneligiblePreview) {
+        return {
+          ...candidate,
+          categoryKey: assessment.categoryKey,
+          category: categoryLabel(assessment.categoryKey),
+          admission: assessment,
+          review,
+        };
+      }
+      await sourceStore.recordAdmissionReview(review);
+      throw new Error("The source was not admitted. Fact-Check requires a high-confidence official-source assessment with no material uncertainty.");
+    }
+    if (requireManualReview && !manualReviewed) {
+      await sourceStore.recordAdmissionReview(review);
+      throw new Error("Confirm that you manually reviewed the source's official ownership and scope before adding it.");
+    }
+
+    return {
+      ...candidate,
+      categoryKey: assessment.categoryKey,
+      category: categoryLabel(assessment.categoryKey),
+      admission: assessment,
+      review,
+    };
+  }
+
+  function sourceFieldsFromRequest(body) {
+    const fields = ["name", "url", "rationale", "description", "active"];
+    return Object.fromEntries(fields.filter((field) => Object.hasOwn(body, field)).map((field) => [field, body[field]]));
   }
 
   const app = http.createServer(async (request, response) => {
@@ -229,6 +302,7 @@ export function createApp(options = {}) {
       }
 
       if (pathname === "/api/check" && request.method === "POST") {
+        if (!claimAttemptAllowed(request)) return sendError(response, 429, "Too many verification requests from this connection. Please wait a few minutes and try again.");
         const body = await readJson(request);
         const claim = String(body.claim || "").trim();
         const imageDataUrl = typeof body.imageDataUrl === "string" ? body.imageDataUrl : "";
@@ -238,34 +312,61 @@ export function createApp(options = {}) {
 
         const snapshot = await sourceStore.snapshot();
         const activeSources = activeSourcesFromSnapshot(snapshot);
-        const domains = domainsFromSources(activeSources);
+        const categories = categorySummary(activeSources);
+        const selection = await claimCategoryClassifier({
+          apiKey: config.apiKey,
+          model: config.model,
+          claim,
+          imageDataUrl,
+          categories,
+        });
+        const selected = selectSourcesForCategories(activeSources, selection.categoryKeys);
+        const domains = selected.domains;
+        if (!domains.length) throw new Error("There are no active trusted sources in the categories selected for this claim.");
         const isApprovedUrl = (candidate) => {
           try {
-            const hostname = sourceDomain(candidate);
+            const checkedUrl = new URL(candidate);
+            if (checkedUrl.protocol !== "https:") return false;
+            const hostname = sourceDomain(checkedUrl);
             return domains.some((domain) => hostname === domain || hostname.endsWith("." + domain));
           } catch {
             return false;
           }
         };
 
-        const result = await checkClaimWithOpenAI({
+        const result = await evidenceChecker({
           apiKey: config.apiKey,
           model: config.model,
           claim,
           imageDataUrl,
           domains,
+          sources: selected.sources,
           isApprovedUrl,
           sourceLabelForUrl: (candidate) => {
             try {
-              const domain = sourceDomain(candidate);
-              const match = activeSources.find((source) => domain === source.domain || domain.endsWith("." + source.domain));
+              const checkedUrl = new URL(candidate);
+              if (checkedUrl.protocol !== "https:") return "";
+              const domain = sourceDomain(checkedUrl);
+              const match = selected.sources.find((source) => domain === source.domain || domain.endsWith("." + source.domain));
               return match?.name || "";
             } catch {
               return "";
             }
           },
         });
-        return sendJson(response, 200, { ...result, registryVersion: snapshot.version });
+        return sendJson(response, 200, {
+          ...result,
+          registryVersion: snapshot.version,
+          categorySelection: {
+            categoryKeys: selection.categoryKeys,
+            categories: selection.categoryKeys.map((key) => categoryForKey(key)).filter(Boolean),
+            reason: selection.reason,
+            selectedSourceCount: selected.sources.length,
+            selectedDomainCount: domains.length,
+            matchingSourceCount: selected.matchingSourceCount,
+            truncated: selected.truncated,
+          },
+        });
       }
 
       if (pathname === "/api/admin/status" && request.method === "GET") {
@@ -300,8 +401,18 @@ export function createApp(options = {}) {
         if (request.method === "GET") return sendJson(response, 200, await sourceStore.snapshot());
         if (request.method === "POST") {
           const body = await readJson(request, 128 * 1024);
-          return sendJson(response, 201, await sourceStore.add(body));
+          const admitted = await assessSourceAdmission(body, null, { manualReviewed: body.manualReviewed === true });
+          const added = await sourceStore.addWithAdmissionReview({ ...sourceFieldsFromRequest(body), ...admitted }, admitted.review);
+          return sendJson(response, 201, { ...added, admission: admitted.admission });
         }
+      }
+
+      if (pathname === "/api/admin/sources/assess" && request.method === "POST") {
+        if (!(await requireAdmin(request, response))) return;
+        const body = await readJson(request, 128 * 1024);
+        const admitted = await assessSourceAdmission(body, null, { requireManualReview: false, allowIneligiblePreview: true });
+        await sourceStore.recordAdmissionReview(admitted.review);
+        return sendJson(response, 200, { assessment: admitted.admission, category: categoryForKey(admitted.categoryKey) });
       }
 
       if (pathname.startsWith("/api/admin/sources/")) {
@@ -310,7 +421,17 @@ export function createApp(options = {}) {
         if (!id) return sendError(response, 400, "A source ID is required.");
         if (request.method === "PATCH") {
           const body = await readJson(request, 128 * 1024);
-          return sendJson(response, 200, await sourceStore.update(id, body));
+          if (Object.hasOwn(body, "category") || Object.hasOwn(body, "categoryKey")) {
+            return sendError(response, 400, "Source categories are assigned by the source-admission review.");
+          }
+          const sourceFields = sourceFieldsFromRequest(body);
+          const needsReview = ["name", "url", "rationale", "description"].some((field) => Object.hasOwn(body, field));
+          if (!needsReview) return sendJson(response, 200, await sourceStore.update(id, sourceFields));
+          const existing = await sourceStore.get(id);
+          if (!existing) return sendError(response, 404, "Source not found.");
+          const admitted = await assessSourceAdmission(body, existing, { manualReviewed: body.manualReviewed === true });
+          const updated = await sourceStore.updateWithAdmissionReview(id, { ...sourceFields, ...admitted }, admitted.review);
+          return sendJson(response, 200, { ...updated, admission: admitted.admission });
         }
         if (request.method === "DELETE") return sendJson(response, 200, await sourceStore.remove(id));
       }
@@ -333,7 +454,7 @@ export function createApp(options = {}) {
           ? 409
           : /not found/i.test(message)
             ? 404
-            : /required|valid|between|password|keep|smaller|active domains|more than 100/i.test(message)
+            : /required|valid|between|password|keep|smaller|active domains|more than 100|category|not admitted|manual review|social-platform/i.test(message)
               ? 400
               : /sign in|not allowed/i.test(message)
                 ? 403

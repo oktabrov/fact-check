@@ -5,7 +5,7 @@ import { createAuth, createUserAuth } from "../lib/auth.mjs";
 import { runMigrations } from "../lib/migrations.mjs";
 import { trustedSourcesPdf } from "../lib/pdf.mjs";
 import { seedTrustedSources } from "../lib/seed.mjs";
-import { createSourceStore } from "../lib/store.mjs";
+import { createSourceStore, selectSourcesForCategories } from "../lib/store.mjs";
 import { createApp } from "../server.mjs";
 
 async function testDatabase({ seed = false } = {}) {
@@ -24,6 +24,8 @@ test("PostgreSQL source registry preserves the trusted-domain boundary", async (
     await store.add({ name: "WHO", url: "https://www.who.int/", category: "Authority", rationale: "Global health authority." });
     assert.deepEqual(await store.activeDomains(), ["who.int"]);
     assert.equal(await store.isApprovedUrl("https://news.who.int/updates"), true);
+    assert.equal(await store.isApprovedUrl("http://who.int/updates"), false);
+    assert.equal(await store.isApprovedUrl("ftp://who.int/updates"), false);
     assert.equal(await store.isApprovedUrl("https://who.int.evil.example"), false);
     const added = await store.add({ name: "CDC", url: "https://www.cdc.gov/", category: "Authority", rationale: "Public health authority." });
     assert.equal(added.source.active, true);
@@ -32,21 +34,27 @@ test("PostgreSQL source registry preserves the trusted-domain boundary", async (
       () => store.add({ name: "Duplicate WHO", url: "https://www.who.int/", category: "Authority", rationale: "Duplicate source." }),
       /already in the registry/i,
     );
+    await assert.rejects(
+      () => store.add({ name: "Telegram channel", url: "https://t.me/example", categoryKey: "government-and-law", rationale: "A platform account is not a first-party source domain." }),
+      /social-platform/i,
+    );
   } finally {
     await pool.end();
   }
 });
 
-test("PostgreSQL migration seeds the 100-source public registry once", async () => {
+test("PostgreSQL migration seeds the categorized 214-source public registry once", async () => {
   const pool = await testDatabase();
   try {
     const firstSeed = await seedTrustedSources(pool);
     const secondSeed = await seedTrustedSources(pool);
     const snapshot = await createSourceStore(pool).snapshot();
-    assert.equal(firstSeed.seeded, 100);
+    assert.equal(firstSeed.seeded, 214);
     assert.equal(secondSeed.skipped, true);
-    assert.equal(snapshot.sources.length, 100);
-    assert.equal((await createSourceStore(pool).activeDomains()).length, 100);
+    assert.equal(snapshot.sources.length, 214);
+    assert.equal((await createSourceStore(pool).activeDomains()).length, 214);
+    assert.equal(snapshot.sources.find((source) => source.id === "src-106").categoryKey, "economy-and-finance");
+    assert.ok(snapshot.sources.some((source) => source.categoryKey === "weather-and-emergencies"));
   } finally {
     await pool.end();
   }
@@ -60,6 +68,43 @@ test("generated trusted-source PDF has a valid PDF header", () => {
   });
   assert.equal(pdf.subarray(0, 8).toString("latin1"), "%PDF-1.4");
   assert.ok(pdf.toString("latin1").includes("Fact-Check"));
+});
+
+test("category selection keeps each evidence search inside selected source categories", async () => {
+  const pool = await testDatabase({ seed: true });
+  try {
+    const snapshot = await createSourceStore(pool).snapshot();
+    const selection = selectSourcesForCategories(snapshot.sources, ["economy-and-finance", "government-and-law"]);
+    assert.ok(selection.domains.includes("cbu.uz"));
+    assert.ok(selection.sources.length > 0);
+    assert.ok(selection.sources.every((source) => ["economy-and-finance", "government-and-law"].includes(source.categoryKey)));
+    assert.ok(selection.domains.length <= 100);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("domain limits keep representation from every selected category", () => {
+  const source = (id, categoryKey) => ({
+    id,
+    name: id,
+    domain: id + ".example",
+    categoryKey,
+    active: true,
+  });
+  const selection = selectSourcesForCategories([
+    source("finance-a", "economy-and-finance"),
+    source("finance-b", "economy-and-finance"),
+    source("law-a", "government-and-law"),
+    source("law-b", "government-and-law"),
+    source("weather-a", "weather-and-emergencies"),
+  ], ["economy-and-finance", "government-and-law", "weather-and-emergencies"], 3);
+
+  assert.equal(selection.domains.length, 3);
+  assert.deepEqual(new Set(selection.sources.map((item) => item.categoryKey)), new Set([
+    "economy-and-finance", "government-and-law", "weather-and-emergencies",
+  ]));
+  assert.equal(selection.truncated, true);
 });
 
 test("environment-backed administrator sessions are stored in PostgreSQL", async () => {
@@ -125,8 +170,8 @@ test("public user sessions cannot access administrator routes", async () => {
   try {
     const sourceResponse = await fetch(baseUrl + "/api/sources");
     const sourceData = await sourceResponse.json();
-    assert.equal(sourceData.sourceCount, 100);
-    assert.equal(sourceData.categoryCounts.length, 4);
+    assert.equal(sourceData.sourceCount, 214);
+    assert.equal(sourceData.categoryCounts.length, 10);
 
     const signup = await fetch(baseUrl + "/api/auth/signup", {
       method: "POST",
@@ -154,6 +199,183 @@ test("public user sessions cannot access administrator routes", async () => {
     const adminCookie = adminLogin.headers.get("set-cookie").split(";")[0];
     const allowed = await fetch(baseUrl + "/api/admin/sources", { headers: { Cookie: adminCookie } });
     assert.equal(allowed.status, 200);
+  } finally {
+    await new Promise((resolve) => app.close(resolve));
+    await pool.end();
+  }
+});
+
+test("claim checks classify categories before a separate restricted evidence request", async () => {
+  const pool = await testDatabase({ seed: true });
+  const events = [];
+  let evidenceArguments;
+  const app = createApp({
+    pool,
+    config: {
+      apiKey: "test-key",
+      adminUsername: "factcheck-admin",
+      adminPassword: "a-long-admin-test-password",
+      model: "test-model",
+      nodeEnv: "test",
+      port: 0,
+    },
+    classifyClaimCategories: async (arguments_) => {
+      events.push("classify");
+      assert.equal(arguments_.claim, "O'zbekistonda naqd pul ishlatish mumkin emasmi?");
+      return {
+        categoryKeys: ["economy-and-finance", "government-and-law"],
+        reason: "The claim concerns national payment rules and financial regulation.",
+      };
+    },
+    checkClaimWithOpenAI: async (arguments_) => {
+      events.push("check");
+      evidenceArguments = arguments_;
+      assert.equal(arguments_.isApprovedUrl("https://cbu.uz/en/"), true);
+      assert.equal(arguments_.isApprovedUrl("http://cbu.uz/en/"), false);
+      assert.equal(arguments_.isApprovedUrl("ftp://cbu.uz/en/"), false);
+      return {
+        verdict: "SUPPORTED",
+        explanation: "Selected official sources confirm the relevant rule.",
+        sources: [{ url: "https://cbu.uz/en/", title: "Central Bank of Uzbekistan" }],
+        checkedAt: "2026-07-27T00:00:00.000Z",
+        model: "test-model",
+      };
+    },
+  });
+
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
+  const port = app.address().port;
+  try {
+    const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ claim: "O'zbekistonda naqd pul ishlatish mumkin emasmi?" }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(events, ["classify", "check"]);
+    assert.deepEqual(body.categorySelection.categoryKeys, ["economy-and-finance", "government-and-law"]);
+    assert.ok(evidenceArguments.domains.includes("cbu.uz"));
+    assert.ok(evidenceArguments.sources.every((source) => ["economy-and-finance", "government-and-law"].includes(source.categoryKey)));
+    assert.equal(body.explanation, "Selected official sources confirm the relevant rule.");
+  } finally {
+    await new Promise((resolve) => app.close(resolve));
+    await pool.end();
+  }
+});
+
+test("anonymous claim checks are rate-limited before paid AI work", async () => {
+  const pool = await testDatabase({ seed: true });
+  const app = createApp({
+    pool,
+    config: {
+      apiKey: "test-key",
+      adminUsername: "factcheck-admin",
+      adminPassword: "a-long-admin-test-password",
+      model: "test-model",
+      nodeEnv: "test",
+      port: 0,
+    },
+    classifyClaimCategories: async () => ({
+      categoryKeys: ["government-and-law"],
+      reason: "Government information is relevant.",
+    }),
+    checkClaimWithOpenAI: async () => ({
+      verdict: "INSUFFICIENT",
+      explanation: "The selected sources do not provide enough evidence.",
+      sources: [],
+      checkedAt: "2026-07-27T00:00:00.000Z",
+      model: "test-model",
+    }),
+  });
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
+  const port = app.address().port;
+
+  try {
+    const statuses = [];
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ claim: "Is this public notice accurate?" }),
+      });
+      statuses.push(response.status);
+    }
+    assert.deepEqual(statuses, [200, 200, 200, 200, 200, 200, 200, 200, 429]);
+  } finally {
+    await new Promise((resolve) => app.close(resolve));
+    await pool.end();
+  }
+});
+
+test("administrator source admission assigns the AI-reviewed category and records an audit entry", async () => {
+  const pool = await testDatabase({ seed: true });
+  const auth = createAuth({ pool, adminUsername: "factcheck-admin", adminPassword: "a-long-admin-test-password" });
+  const app = createApp({
+    pool,
+    auth,
+    config: {
+      apiKey: "test-key",
+      adminUsername: "factcheck-admin",
+      adminPassword: "a-long-admin-test-password",
+      model: "test-model",
+      nodeEnv: "test",
+      port: 0,
+    },
+    assessTrustedSourceWithOpenAI: async ({ source }) => ({
+      eligible: source.name !== "Unclear source",
+      categoryKey: "economy-and-finance",
+      confidence: source.name === "Unclear source" ? "low" : "high",
+      reason: source.name === "Unclear source"
+        ? "Official ownership cannot be confirmed from this domain."
+        : "The first-party site is an official central-bank authority.",
+      sources: [],
+      model: "test-model",
+    }),
+  });
+
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
+  const port = app.address().port;
+  try {
+    const login = await fetch("http://127.0.0.1:" + port + "/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "factcheck-admin", password: "a-long-admin-test-password" }),
+    });
+    const cookie = login.headers.get("set-cookie").split(";")[0];
+    const preview = await fetch("http://127.0.0.1:" + port + "/api/admin/sources/assess", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "Unclear source",
+        url: "https://unclear.example/",
+        rationale: "The ownership of this candidate is not yet clear.",
+      }),
+    });
+    assert.equal(preview.status, 200);
+    assert.equal((await preview.json()).assessment.eligible, false);
+    const added = await fetch("http://127.0.0.1:" + port + "/api/admin/sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "Example Central Bank",
+        url: "https://centralbank.example/",
+        rationale: "Official central-bank source for monetary policy and payment rules.",
+        categoryKey: "public-health",
+        manualReviewed: true,
+      }),
+    });
+    assert.equal(added.status, 201);
+    const body = await added.json();
+    assert.equal(body.source.categoryKey, "economy-and-finance");
+    assert.equal(body.source.category, "Economy and finance");
+    const review = await pool.query("SELECT source_id FROM source_admission_reviews WHERE candidate_domain = 'centralbank.example'");
+    assert.equal(review.rows.length, 1);
+    assert.equal(review.rows[0].source_id, body.source.id);
+    const unlinkedPreview = await pool.query("SELECT source_id, eligible FROM source_admission_reviews WHERE candidate_domain = 'unclear.example'");
+    assert.equal(unlinkedPreview.rows.length, 1);
+    assert.equal(unlinkedPreview.rows[0].source_id, null);
+    assert.equal(unlinkedPreview.rows[0].eligible, false);
   } finally {
     await new Promise((resolve) => app.close(resolve));
     await pool.end();

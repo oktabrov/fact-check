@@ -2,70 +2,87 @@
 
 > Check the evidence. Think before you share.
 
-Fact-Check is an evidence-led Media and Information Literacy (MIL) web prototype. It helps people investigate a claim or image context through a transparent, curated source registry, then brings them back to the original evidence.
+Fact-Check is an evidence-led Media and Information Literacy platform. It helps people investigate a claim or image context through a transparent, categorized source registry, then returns a concise result with direct links to the evidence.
 
-It is an independent youth-built prototype created for the [UNESCO Youth Hackathon 2026](https://www.unesco.org/en/articles/unesco-youth-hackathon-2026?hub=390). It is not affiliated with or endorsed by UNESCO.
+Fact-Check is independently built by Umrbek Oktyabrov for the UNICEF Youth Hackathon 2026. It is not affiliated with or endorsed by UNICEF.
 
-## The idea
+## How verification works
 
-AI can make misleading content faster, cheaper, and more convincing to produce. The answer should not be another opaque tool that simply says "true" or "false."
+Fact-Check deliberately separates routing from evidence generation:
 
-Fact-Check turns verification into a practical habit:
+1. **Category routing** — A first OpenAI request receives the claim and the fixed source taxonomy. It selects the smallest relevant set of source categories. This request has no web-search tool and cannot return a verdict.
+2. **Restricted evidence search** — A separate OpenAI request receives only the domains and source links in those selected categories. Its web search is restricted by an allowed-domain boundary, then all returned citations are validated server-side.
+3. **Short, inspectable result** — The platform displays a concise evidence outcome, categories used, source count, direct citations, check time, and registry version.
 
-1. Ask a clear question about a claim or image.
-2. Search only a public, administrator-managed source registry.
-3. Show the evidence, direct links, time of check, and source-list version.
-4. Make uncertainty visible when the selected sources do not provide enough evidence.
+For example, a question about whether cash can be used in Uzbekistan is routed to **Economy and finance** and **Government and law** before it can search evidence. It does not search unrelated weather, health, social-media, or open-web sources.
 
-The goal is not to replace journalists, experts, or human judgment. It is to help young people and communities ask better questions before they believe or share information.
+## Trusted-source governance
 
-## PostgreSQL-backed data
+The public registry currently seeds **214 reviewed sources** across ten categories:
 
-Fact-Check now uses PostgreSQL for its production data, rather than JSON files:
+- International institutions
+- Government and law
+- Economy and finance
+- Public health
+- Weather and emergencies
+- Science and environment
+- Elections and civic information
+- Cyber and digital safety
+- Fact-checking and verification
+- Public-interest journalism
 
-- **trusted_sources** stores the transparent public registry and administrator edits.
-- **source_registry** stores the version and update time shown on results.
-- **app_users** stores user accounts with salted, scrypt-hashed passwords.
-- **auth_sessions** stores hashed, expiring user and administrator sessions, so sessions survive an app restart.
+The initial expansion prioritizes first-party official sources, including Uzbekistan's Government Portal, Lex.uz, Central Bank, Statistics Agency, and Central Election Commission alongside international public authorities.
 
-The bundled **data/trusted-sources.json** file is a one-time seed of 100 starter sources. It is not the live production database after setup.
+New administrator submissions are handled as a source-admission workflow:
 
-## Prototype features
+1. The candidate must use HTTPS and cannot be a social-platform domain.
+2. An AI source-review request searches only that candidate domain and assigns a category.
+3. The review must be high confidence and eligible.
+4. The administrator must manually confirm official ownership and evidence scope.
+5. The review outcome is written to a PostgreSQL audit table.
 
-- Responsive home, checker, trusted-source directory, methodology, about, contact, login, sign-up, account, and separate admin views.
-- Home-page overview of the live trusted-source registry, grouped by source type.
-- 100 starter sources across international authorities, public agencies, verification organisations, and public-interest journalism.
-- Downloadable, versioned PDF of the active source list.
-- Separate administrator credentials from **ADMIN_USER** and **ADMIN_PASSWORD**; ordinary accounts never receive source-management access.
-- PostgreSQL-backed user accounts and sessions using HttpOnly cookies.
-- Source-restricted OpenAI Responses API integration with server-side citation filtering and optional image input.
+Social platforms such as Telegram, Facebook, Instagram, X, TikTok, and YouTube are intentionally excluded from the automated registry. An allowed-domain filter for a platform would authorize every account on that platform, not only an official channel.
+
+The registry may grow beyond 100 domains, but each individual evidence search is capped at **100 selected domains**. This keeps a category-scoped check focused rather than silently widening it to the open web.
+
+The enforced boundary is an approved HTTPS **domain** selected from the public registry, because web search works at domain scope. It is not a claim that every page on that domain proves every claim; citations are shown so people can inspect the specific evidence themselves.
+
+## Platform architecture
+
+Fact-Check stores production data in PostgreSQL:
+
+- **trusted_sources** — public source registry, category keys, active state, and rationale
+- **source_registry** — version and update timestamp for reproducible results
+- **source_admission_reviews** — AI admission assessment and manual-review audit entries
+- **app_users** — regular accounts with salted scrypt password hashes
+- **auth_sessions** — hashed, expiring user and administrator sessions
+
+The source list is public at /sources and downloadable at /api/sources.pdf. The administrator workspace remains at /admin and is protected by server-environment credentials.
 
 ## Run locally
 
-1. Run **npm install**.
-2. Copy the values from **environment.example.env** into a private **environment.env** file.
-3. Set **DATABASE_URL** to your PostgreSQL database, for example **postgresql://postgres:your-password@localhost:5432/fact_check**.
-4. Set **api_key**, **ADMIN_USER**, and a strong **ADMIN_PASSWORD**.
-5. Run **npm run db:setup** to apply the schema and seed the 100 trusted sources.
-6. Run **npm start**, then open **http://localhost:3000**.
-
-The setup command is safe to run repeatedly: migrations are recorded, and the source seed only runs if the live registry is empty.
+1. Run npm install.
+2. Copy the values in environment.example.env into a private environment.env file.
+3. Set DATABASE_URL, for example: postgresql://postgres:your-password@localhost:5432/fact_check
+4. Set OPENAI_API_KEY (or api_key), ADMIN_USER, and a strong ADMIN_PASSWORD.
+5. Run npm run db:setup.
+6. Run npm start, then open http://localhost:3000.
 
 ## Database commands
 
-- **npm run db:migrate** applies versioned PostgreSQL migrations.
-- **npm run db:seed** imports the initial trusted-source registry only when the table is empty.
-- **npm run db:setup** runs both commands in order.
+- npm run db:migrate applies versioned PostgreSQL migrations.
+- npm run db:seed adds missing reviewed seed sources without overwriting existing administrator-managed records.
+- npm run db:setup runs migrations and the source seed in sequence.
 
-## Safety and deployment notes
+## Deployment essentials
 
-- Put the app behind HTTPS before public deployment.
-- Keep **environment.env** private; it contains the OpenAI key, database URL, and administrator credentials.
-- Set **DATABASE_SSL=true** when your managed PostgreSQL provider requires TLS.
-- Do not make the administrator URL part of public navigation. It remains available at **/admin** and is protected by the server-side credentials.
-- The registry enforces a maximum of 100 active domains, preserving the trusted-source-only search boundary.
-- Publish a clear source-admission policy, privacy notice for image uploads, and human-review route before a public pilot.
+- Deploy behind HTTPS.
+- Keep environment.env private; it contains the OpenAI key, PostgreSQL URL, and administrator credentials.
+- Set DATABASE_SSL=true when the PostgreSQL provider requires TLS. Certificate validation stays on by default; only disable it when a provider explicitly requires that exception.
+- Add edge/WAF rate limiting and bot protection before a multi-instance public launch; the application also limits anonymous verification requests to control paid AI use.
+- Run npm test before deployment.
+- Publish a privacy notice, accessibility statement, and human-review escalation route before opening the platform to the public.
 
-## Short pitch
+## Product principle
 
-**Fact-Check helps people build the habit of checking before sharing: it uses AI to organize evidence from a transparent source list, while keeping the final judgment with the person reading it.**
+**Fact-Check does not claim to be a universal truth machine. It shows what a defined, public, category-relevant source boundary supports at the time of a check — and gives the person using it the evidence to inspect.**
