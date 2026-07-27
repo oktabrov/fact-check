@@ -351,8 +351,9 @@ export function createApp(options = {}) {
 const currentFile = fileURLToPath(import.meta.url);
 if (process.argv[1] && path.resolve(process.argv[1]) === currentFile) {
   const config = loadConfig();
-  const pool = createDatabasePool(config);
+  let pool;
   try {
+    pool = createDatabasePool(config);
     await assertDatabaseReady(pool);
     const app = createApp({ config, pool });
     app.listen(config.port, () => {
@@ -360,7 +361,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === currentFile) {
     });
   } catch (error) {
     console.error(error instanceof Error ? error.message : "Unable to start Fact-Check.");
-    await pool.end();
+    if (pool) await pool.end();
     process.exitCode = 1;
   }
 }
