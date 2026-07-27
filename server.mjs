@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAuth, createUserAuth } from "./lib/auth.mjs";
+import { bootstrapEnvironmentAdministrator, createAuth, createUserAuth } from "./lib/auth.mjs";
 import { categoryForKey, categoryLabel, categorySummary, isBlockedPlatformDomain, SOURCE_CATEGORIES } from "./lib/categories.mjs";
 import { assertDatabaseReady, createDatabasePool } from "./lib/db.mjs";
 import { PUBLIC_DIR, loadConfig } from "./lib/config.mjs";
@@ -146,7 +146,7 @@ export function createApp(options = {}) {
   const sourceStore = options.sourceStore || createSourceStore(pool);
   const adminAuth = options.auth || createAuth({
     pool,
-    adminUsername: config.adminUsername,
+    adminEmail: config.adminEmail || config.adminUsername,
     adminPassword: config.adminPassword,
     production: config.nodeEnv === "production",
   });
@@ -293,6 +293,11 @@ export function createApp(options = {}) {
           password: String(body.password || ""),
         });
         if (!account) return sendError(response, 401, "Email or password is not correct.");
+        if (account.administrator) {
+          const token = await adminAuth.login(String(body.email || ""), String(body.password || ""));
+          if (!token) return sendError(response, 401, "Email or password is not correct.");
+          return sendJson(response, 200, { administrator: true }, { "Set-Cookie": adminAuth.cookie(token) });
+        }
         return sendJson(response, 200, { user: account.user }, { "Set-Cookie": userAuth.cookie(account.token) });
       }
 
@@ -386,7 +391,7 @@ export function createApp(options = {}) {
       if (pathname === "/api/admin/login" && request.method === "POST") {
         if (!adminAttemptAllowed(request)) return sendError(response, 429, "Too many administrator sign-in attempts. Please try again later.");
         const body = await readJson(request, 64 * 1024);
-        const token = await adminAuth.login(String(body.username || ""), String(body.password || ""));
+        const token = await adminAuth.login(String(body.email || body.username || ""), String(body.password || ""));
         if (!token) return sendError(response, 401, "Those administrator credentials are not correct.");
         return sendJson(response, 200, { ok: true }, { "Set-Cookie": adminAuth.cookie(token) });
       }
@@ -476,6 +481,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === currentFile) {
   try {
     pool = createDatabasePool(config);
     await assertDatabaseReady(pool);
+    await bootstrapEnvironmentAdministrator({
+      pool,
+      email: config.adminEmail || config.adminUsername,
+      password: config.adminPassword,
+      rotatePassword: config.adminPasswordRotate,
+    });
     const app = createApp({ config, pool });
     app.listen(config.port, () => {
       console.log("Fact-Check is running at http://localhost:" + config.port);

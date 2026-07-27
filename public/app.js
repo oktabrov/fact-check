@@ -10,6 +10,26 @@ const state = {
   currentUser: null,
 };
 
+const LEGACY_CATEGORY_METADATA = {
+  "international-institutions": { label: "International institutions", description: "Intergovernmental bodies and multilateral public authorities." },
+  "government-and-law": { label: "Government and law", description: "Official government services, legislation, and public notices." },
+  "economy-and-finance": { label: "Economy and finance", description: "Central banks, financial regulators, and official statistics." },
+  "public-health": { label: "Public health", description: "Health authorities, medicine regulators, and disease surveillance." },
+  "weather-and-emergencies": { label: "Weather and emergencies", description: "Official weather, disaster, and emergency-alert authorities." },
+  "science-and-environment": { label: "Science and environment", description: "Public science agencies and environmental authorities." },
+  "elections-and-civic-information": { label: "Elections and civic information", description: "Election commissions and official civic-information bodies." },
+  "cyber-and-digital-safety": { label: "Cyber and digital safety", description: "National cyber agencies and public digital-safety guidance." },
+  "fact-checking-and-verification": { label: "Fact-checking and verification", description: "Established verification organisations with transparent methods." },
+  "public-interest-journalism": { label: "Public-interest journalism", description: "Selected public-service and international newsrooms." },
+};
+
+const LEGACY_CATEGORY_KEYS = {
+  "international authority": "international-institutions",
+  "official public authority": "government-and-law",
+  "fact-checking / verification": "fact-checking-and-verification",
+  "news / public-interest journalism": "public-interest-journalism",
+};
+
 document.querySelector("#year").textContent = new Date().getFullYear();
 
 function escapeHtml(value) {
@@ -60,7 +80,13 @@ async function api(path, options = {}) {
     ...options,
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || "Something went wrong. Please try again.");
+  if (!response.ok) {
+    const message = payload.error || "Something went wrong. Please try again.";
+    if (message === "API route not found.") {
+      throw new Error("This page is connected to an older Fact-Check server. Restart the server to apply the current platform update, then try again.");
+    }
+    throw new Error(message);
+  }
   return payload;
 }
 
@@ -316,11 +342,50 @@ async function loadSourceData(force = false) {
   if (state.sourceData && !force) return state.sourceData;
   if (state.sourcePromise && !force) return state.sourcePromise;
   state.sourcePromise = api("/api/sources").then((data) => {
-    state.sourceData = data;
+    state.sourceData = normaliseSourceData(data);
     state.sourcePromise = null;
-    return data;
+    return state.sourceData;
   }).catch((error) => { state.sourcePromise = null; throw error; });
   return state.sourcePromise;
+}
+
+function sourceCategoryKey(source) {
+  const explicit = String(source?.categoryKey || "").trim();
+  if (explicit && LEGACY_CATEGORY_METADATA[explicit]) return explicit;
+  const legacy = LEGACY_CATEGORY_KEYS[String(source?.category || "").trim().toLowerCase()];
+  return legacy || "government-and-law";
+}
+
+function normaliseSourceData(payload) {
+  const sourceRows = Array.isArray(payload?.sources) ? payload.sources : [];
+  const suppliedCategories = Array.isArray(payload?.categories)
+    ? payload.categories.filter((item) => item && typeof item === "object" && item.key)
+    : [];
+  const categoryDetails = new Map(suppliedCategories.map((item) => [String(item.key), item]));
+  const sources = sourceRows.map((source) => {
+    const categoryKey = sourceCategoryKey(source);
+    const fallback = LEGACY_CATEGORY_METADATA[categoryKey] || LEGACY_CATEGORY_METADATA["government-and-law"];
+    return { ...source, categoryKey, category: source.category || fallback.label };
+  });
+  const counts = new Map();
+  for (const source of sources) counts.set(source.categoryKey, (counts.get(source.categoryKey) || 0) + 1);
+  const categories = [...counts.entries()].map(([key, count]) => {
+    const supplied = categoryDetails.get(key) || {};
+    const fallback = LEGACY_CATEGORY_METADATA[key] || LEGACY_CATEGORY_METADATA["government-and-law"];
+    return {
+      key,
+      label: supplied.label || fallback.label,
+      description: supplied.description || fallback.description,
+      count,
+    };
+  }).sort((left, right) => left.label.localeCompare(right.label));
+
+  return {
+    ...payload,
+    sourceCount: Number(payload?.sourceCount) || sources.length,
+    sources,
+    categories,
+  };
 }
 
 async function hydrateSourceCount() {
@@ -331,7 +396,7 @@ async function hydrateSourceCount() {
 }
 
 function registryCounts(data) {
-  if (Array.isArray(data.categories)) return data.categories;
+  if (Array.isArray(data.categories) && data.categories.every((item) => item && item.key)) return data.categories;
   const counts = new Map();
   (data.sources || []).forEach((source) => {
     const key = source.categoryKey || source.category;
@@ -474,16 +539,16 @@ function renderAccessibility() {
 function adminLoginMarkup({ setupAllowed, configured, usernameRequired }) {
   const setup = setupAllowed;
   const usernameInput = !setup && usernameRequired
-    ? `<div><label class="form-label" for="admin-username">Administrator username</label><input id="admin-username" type="text" autocomplete="username" required /></div>`
+    ? `<div><label class="form-label" for="admin-username">Administrator email address</label><input id="admin-username" type="email" autocomplete="username" required /></div>`
     : "";
   const introduction = setup
     ? "This first-time setup is available only on this computer. Use a long, unique password."
     : configured
-      ? "Use the administrator credentials stored securely in the server environment."
-      : "Set ADMIN_USER and ADMIN_PASSWORD in environment.env before accessing this deployed administrator area.";
+      ? "This is separate from a regular account. Use the administrator email and password configured on the server."
+      : "Set ADMIN_EMAIL and ADMIN_PASSWORD in environment.env, then run database setup before accessing this administrator area.";
   const credentialInputs = setup || configured
     ? `${usernameInput}<div><label class="form-label" for="admin-password">Password</label><input id="admin-password" type="password" autocomplete="current-password" minlength="12" required /></div><span class="form-help">${setup ? "At least 12 characters." : "Administrator credentials are never displayed in the browser."}</span><button class="btn btn-primary" type="submit">${setup ? "Secure this admin area" : "Sign in"} <span aria-hidden="true">→</span></button>`
-    : `<div class="warning">For security, remote first-time setup is disabled. Add a strong ADMIN_USER and ADMIN_PASSWORD to environment.env and restart the server.</div>`;
+    : `<div class="warning">For security, remote first-time setup is disabled. Add ADMIN_EMAIL and a strong ADMIN_PASSWORD to environment.env, then run database setup.</div>`;
   return `<section class="page"><form class="login-box auth-box glass-card reveal visible" id="admin-auth-form"><a class="brand" href="/" data-route><span class="brand-mark" aria-hidden="true"><i></i></span><span>Fact<span>-Check</span></span></a><span class="eyebrow">Administrator area</span><h1>${setup ? "Create the first admin password" : "Administrator sign in"}</h1><p class="lead">${introduction}</p><div class="auth-form">${credentialInputs}</div></form></section>`;
 }
 
@@ -612,11 +677,11 @@ function bindAdminAuth(status) {
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const password = document.querySelector("#admin-password").value;
-    const username = document.querySelector("#admin-username")?.value || "";
+    const email = document.querySelector("#admin-username")?.value || "";
     const button = form.querySelector("button[type=submit]");
     button.disabled = true;
     try {
-      await api(status.setupAllowed ? "/api/admin/setup" : "/api/admin/login", { method: "POST", body: JSON.stringify({ username, password }) });
+      await api(status.setupAllowed ? "/api/admin/setup" : "/api/admin/login", { method: "POST", body: JSON.stringify({ email, password }) });
       toast(status.setupAllowed ? "Admin password created." : "Signed in.", "success");
       render();
     } catch (error) {
@@ -630,7 +695,7 @@ function renderLogin() {
     navigate("/account");
     return;
   }
-  app.innerHTML = `<section class="page page-narrow"><form class="login-box auth-box glass-card reveal visible" id="user-login-form"><span class="eyebrow">Welcome back</span><h1>Keep building your verification habit.</h1><p class="lead">Log in to access your Fact-Check account. Fact-checking remains available to everyone, with or without an account.</p><div class="auth-form"><div><label class="form-label" for="login-email">Email address</label><input id="login-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div><div><label class="form-label" for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required /></div><button class="btn btn-primary" type="submit">Log in <span aria-hidden="true">→</span></button></div><p class="auth-switch">New to Fact-Check? <a href="/signup" data-route>Create an account</a></p></form></section>`;
+  app.innerHTML = `<section class="page page-narrow"><form class="login-box auth-box glass-card reveal visible" id="user-login-form"><span class="eyebrow">Account sign in</span><h1>Log in to Fact-Check.</h1><p class="lead">Use your email and password to access your account. Checking claims and browsing trusted sources remain available without an account.</p><div class="auth-form"><div><label class="form-label" for="login-email">Email address</label><input id="login-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div><div><label class="form-label" for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required /></div><button class="btn btn-primary" type="submit">Log in <span aria-hidden="true">→</span></button></div><p class="auth-switch">Need an account? <a href="/signup" data-route>Create one</a></p><p class="auth-admin">Administrator account? Enter its email above, or <a href="/admin" data-route>sign in directly</a>.</p></form></section>`;
   bindUserLogin();
 }
 
@@ -650,6 +715,12 @@ function bindUserLogin() {
           password: document.querySelector("#login-password").value,
         }),
       });
+      if (response.administrator) {
+        state.currentUser = null;
+        toast("Administrator sign-in successful.", "success");
+        navigate("/admin");
+        return;
+      }
       state.currentUser = response.user;
       toast("Welcome back.", "success");
       navigate("/account");

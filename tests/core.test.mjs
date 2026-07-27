@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { newDb } from "pg-mem";
-import { createAuth, createUserAuth } from "../lib/auth.mjs";
+import { bootstrapEnvironmentAdministrator, createAuth, createUserAuth } from "../lib/auth.mjs";
 import { runMigrations } from "../lib/migrations.mjs";
 import { trustedSourcesPdf } from "../lib/pdf.mjs";
 import { seedTrustedSources } from "../lib/seed.mjs";
 import { createSourceStore, selectSourcesForCategories } from "../lib/store.mjs";
 import { createApp } from "../server.mjs";
+
+const TEST_ADMIN_EMAIL = "factcheck-admin@example.test";
+const TEST_ADMIN_PASSWORD = "a-long-admin-test-password";
 
 async function testDatabase({ seed = false } = {}) {
   const database = newDb({ autoCreateForeignKeyIndices: true });
@@ -110,12 +113,17 @@ test("domain limits keep representation from every selected category", () => {
 test("environment-backed administrator sessions are stored in PostgreSQL", async () => {
   const pool = await testDatabase();
   try {
-    const auth = createAuth({ pool, adminUsername: "factcheck-admin", adminPassword: "a-long-admin-test-password" });
+    const bootstrap = await bootstrapEnvironmentAdministrator({ pool, email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD });
+    assert.equal(bootstrap.created, true);
+    const auth = createAuth({ pool, adminEmail: TEST_ADMIN_EMAIL, adminPassword: TEST_ADMIN_PASSWORD });
     assert.equal(auth.usernameRequired(), true);
-    assert.equal(await auth.login("wrong-user", "a-long-admin-test-password"), null);
-    const token = await auth.login("factcheck-admin", "a-long-admin-test-password");
+    assert.equal(await auth.login("wrong-user@example.test", TEST_ADMIN_PASSWORD), null);
+    const token = await auth.login(TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD);
     assert.ok(token);
-    const restartedAuth = createAuth({ pool, adminUsername: "factcheck-admin", adminPassword: "a-long-admin-test-password" });
+    const persisted = await pool.query("SELECT email, role, password_hash FROM app_users WHERE email = $1", [TEST_ADMIN_EMAIL]);
+    assert.equal(persisted.rows[0].role, "admin");
+    assert.notEqual(persisted.rows[0].password_hash, TEST_ADMIN_PASSWORD);
+    const restartedAuth = createAuth({ pool, adminEmail: TEST_ADMIN_EMAIL, adminPassword: TEST_ADMIN_PASSWORD });
     assert.equal(await restartedAuth.isAuthenticated({ headers: { cookie: "fact_check_admin=" + token } }), true);
     await restartedAuth.logout({ headers: { cookie: "fact_check_admin=" + token } });
     assert.equal(await auth.isAuthenticated({ headers: { cookie: "fact_check_admin=" + token } }), false);
@@ -147,14 +155,15 @@ test("PostgreSQL user accounts use a separate session and never expose password 
 
 test("public user sessions cannot access administrator routes", async () => {
   const pool = await testDatabase({ seed: true });
-  const auth = createAuth({ pool, adminUsername: "factcheck-admin", adminPassword: "a-long-admin-test-password" });
+  await bootstrapEnvironmentAdministrator({ pool, email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD });
+  const auth = createAuth({ pool, adminEmail: TEST_ADMIN_EMAIL, adminPassword: TEST_ADMIN_PASSWORD });
   const userAuth = createUserAuth({ pool });
   const app = createApp({
     pool,
     config: {
       apiKey: "",
-      adminUsername: "factcheck-admin",
-      adminPassword: "a-long-admin-test-password",
+      adminEmail: TEST_ADMIN_EMAIL,
+      adminPassword: TEST_ADMIN_PASSWORD,
       model: "test-model",
       nodeEnv: "test",
       port: 0,
@@ -190,10 +199,22 @@ test("public user sessions cannot access administrator routes", async () => {
     const blocked = await fetch(baseUrl + "/api/admin/sources", { headers: { Cookie: userCookie } });
     assert.equal(blocked.status, 401);
 
+    const loginAsAdministrator = await fetch(baseUrl + "/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD }),
+    });
+    const administratorLoginPayload = await loginAsAdministrator.json();
+    assert.equal(loginAsAdministrator.status, 200, JSON.stringify(administratorLoginPayload));
+    assert.equal(administratorLoginPayload.administrator, true);
+    const redirectedAdminCookie = loginAsAdministrator.headers.get("set-cookie").split(";")[0];
+    const redirectedAllowed = await fetch(baseUrl + "/api/admin/sources", { headers: { Cookie: redirectedAdminCookie } });
+    assert.equal(redirectedAllowed.status, 200);
+
     const adminLogin = await fetch(baseUrl + "/api/admin/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "factcheck-admin", password: "a-long-admin-test-password" }),
+      body: JSON.stringify({ email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD }),
     });
     assert.equal(adminLogin.status, 200);
     const adminCookie = adminLogin.headers.get("set-cookie").split(";")[0];
@@ -213,8 +234,8 @@ test("claim checks classify categories before a separate restricted evidence req
     pool,
     config: {
       apiKey: "test-key",
-      adminUsername: "factcheck-admin",
-      adminPassword: "a-long-admin-test-password",
+      adminEmail: TEST_ADMIN_EMAIL,
+      adminPassword: TEST_ADMIN_PASSWORD,
       model: "test-model",
       nodeEnv: "test",
       port: 0,
@@ -270,8 +291,8 @@ test("anonymous claim checks are rate-limited before paid AI work", async () => 
     pool,
     config: {
       apiKey: "test-key",
-      adminUsername: "factcheck-admin",
-      adminPassword: "a-long-admin-test-password",
+      adminEmail: TEST_ADMIN_EMAIL,
+      adminPassword: TEST_ADMIN_PASSWORD,
       model: "test-model",
       nodeEnv: "test",
       port: 0,
@@ -310,14 +331,15 @@ test("anonymous claim checks are rate-limited before paid AI work", async () => 
 
 test("administrator source admission assigns the AI-reviewed category and records an audit entry", async () => {
   const pool = await testDatabase({ seed: true });
-  const auth = createAuth({ pool, adminUsername: "factcheck-admin", adminPassword: "a-long-admin-test-password" });
+  await bootstrapEnvironmentAdministrator({ pool, email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD });
+  const auth = createAuth({ pool, adminEmail: TEST_ADMIN_EMAIL, adminPassword: TEST_ADMIN_PASSWORD });
   const app = createApp({
     pool,
     auth,
     config: {
       apiKey: "test-key",
-      adminUsername: "factcheck-admin",
-      adminPassword: "a-long-admin-test-password",
+      adminEmail: TEST_ADMIN_EMAIL,
+      adminPassword: TEST_ADMIN_PASSWORD,
       model: "test-model",
       nodeEnv: "test",
       port: 0,
@@ -340,7 +362,7 @@ test("administrator source admission assigns the AI-reviewed category and record
     const login = await fetch("http://127.0.0.1:" + port + "/api/admin/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "factcheck-admin", password: "a-long-admin-test-password" }),
+      body: JSON.stringify({ email: TEST_ADMIN_EMAIL, password: TEST_ADMIN_PASSWORD }),
     });
     const cookie = login.headers.get("set-cookie").split(";")[0];
     const preview = await fetch("http://127.0.0.1:" + port + "/api/admin/sources/assess", {

@@ -402,6 +402,8 @@ textarea:focus, input:focus, select:focus { border-color: rgba(198,250,112,.58);
 .auth-form .form-help { margin: -7px 0 2px; }
 .auth-switch { margin: 22px 0 0; color: var(--muted); font-size: .9rem; text-align: center; }
 .auth-switch a { color: var(--lime); font-weight: 700; }
+.auth-admin { margin: 10px 0 0; color: var(--faint); font-size: .79rem; text-align: center; }
+.auth-admin a { color: var(--cyan); font-weight: 700; }
 .account-card { width: min(620px, 100%); margin: 0 auto; padding: clamp(26px, 4vw, 38px); }
 .account-card h1 { margin: 12px 0 8px; font-size: clamp(2rem, 6vw, 3.1rem); letter-spacing: -.055em; line-height: 1.03; }
 .account-card .account-email { margin: 0 0 24px; color: var(--muted); }

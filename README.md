@@ -54,17 +54,17 @@ Fact-Check stores production data in PostgreSQL:
 - **trusted_sources** — public source registry, category keys, active state, and rationale
 - **source_registry** — version and update timestamp for reproducible results
 - **source_admission_reviews** — AI admission assessment and manual-review audit entries
-- **app_users** — regular accounts with salted scrypt password hashes
+- **app_users** — regular and administrator accounts with salted scrypt password hashes and explicit roles
 - **auth_sessions** — hashed, expiring user and administrator sessions
 
-The source list is public at /sources and downloadable at /api/sources.pdf. The administrator workspace remains at /admin and is protected by server-environment credentials.
+The source list is public at /sources and downloadable at /api/sources.pdf. The administrator workspace remains at /admin and uses a database-backed `admin` role bootstrapped from private server environment values.
 
 ## Run locally
 
 1. Run npm install.
 2. Copy the values in environment.example.env into a private environment.env file.
 3. Set DATABASE_URL, for example: postgresql://postgres:your-password@localhost:5432/fact_check
-4. Set OPENAI_API_KEY (or api_key), ADMIN_USER, and a strong ADMIN_PASSWORD.
+4. Set OPENAI_API_KEY (or api_key), ADMIN_EMAIL, and a strong ADMIN_PASSWORD. The administrator account is bootstrapped into PostgreSQL as an `admin` role when setup runs.
 5. Run npm run db:setup.
 6. Run npm start, then open http://localhost:3000.
 
