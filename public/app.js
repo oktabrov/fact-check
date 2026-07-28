@@ -8,6 +8,9 @@ const state = {
   sourcePromise: null,
   editingSourceId: null,
   currentUser: null,
+  adminUser: null,
+  donation: null,
+  donationPromise: null,
 };
 
 const LEGACY_CATEGORY_METADATA = {
@@ -64,7 +67,8 @@ function titleFor(pathname) {
     "/accessibility": "Accessibility — Fact-Check",
     "/login": "Log in — Fact-Check",
     "/signup": "Sign up — Fact-Check",
-    "/account": "Your account — Fact-Check",
+    "/account": "Your profile — Fact-Check",
+    "/donate": "Support Fact-Check",
     "/admin": "Fact-Check Admin",
   };
   return titles[pathname] || "Fact-Check";
@@ -110,6 +114,29 @@ function navigate(pathname) {
   render();
 }
 
+function signedInProfile() {
+  return state.currentUser || state.adminUser;
+}
+
+function isSignedIn() {
+  return Boolean(signedInProfile());
+}
+
+function postLoginDestination() {
+  const next = new URLSearchParams(window.location.search).get("next") || "";
+  return next.startsWith("/") && !next.startsWith("//") ? next : "/account";
+}
+
+function profileInitials(user) {
+  return String(user?.name || "Fact Check")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase() || "FC";
+}
+
 function observeReveals() {
   const items = app.querySelectorAll(".reveal");
   if (!("IntersectionObserver" in window)) {
@@ -130,14 +157,21 @@ function observeReveals() {
 function renderAccountNav() {
   const accountNav = document.querySelector("#account-nav");
   if (!accountNav) return;
-  if (state.currentUser) {
-    accountNav.innerHTML = `<a class="nav-utility-account" href="/account" data-route>Account</a><button class="nav-utility-logout" id="user-logout" type="button">Log out</button>`;
+  if (isSignedIn()) {
+    const adminPanel = state.adminUser
+      ? `<a class="nav-utility-admin" href="/admin" data-route>Admin panel</a>`
+      : "";
+    accountNav.innerHTML = `<a class="nav-utility-account" href="/account" data-route>Profile</a>${adminPanel}<button class="nav-utility-logout" id="user-logout" type="button">Log out</button>`;
     document.querySelector("#user-logout")?.addEventListener("click", async () => {
       try {
-        await api("/api/auth/logout", { method: "POST", body: "{}" });
+        const requests = [];
+        if (state.currentUser) requests.push(api("/api/auth/logout", { method: "POST", body: "{}" }));
+        if (state.adminUser) requests.push(api("/api/admin/logout", { method: "POST", body: "{}" }));
+        await Promise.all(requests);
         state.currentUser = null;
+        state.adminUser = null;
         renderAccountNav();
-        if (window.location.pathname === "/account") navigate("/");
+        if (["/account", "/admin"].includes(window.location.pathname)) navigate("/");
         toast("You have been logged out.");
       } catch (error) {
         toast(error.message, "error");
@@ -152,16 +186,46 @@ async function refreshCurrentUser() {
   try {
     const response = await api("/api/auth/status");
     state.currentUser = response.user || null;
+    state.adminUser = response.administrator || null;
   } catch {
     state.currentUser = null;
+    state.adminUser = null;
   }
   const pathname = window.location.pathname.replace(/\/$/, "") || "/";
-  if (state.currentUser && (pathname === "/login" || pathname === "/signup")) {
-    navigate("/account");
-    return state.currentUser;
+  if (isSignedIn() && (pathname === "/login" || pathname === "/signup")) {
+    navigate(postLoginDestination());
+    return signedInProfile();
   }
   updateNav();
-  return state.currentUser;
+  return signedInProfile();
+}
+
+async function loadDonationConfig(force = false) {
+  if (state.donation && !force) return state.donation;
+  if (state.donationPromise && !force) return state.donationPromise;
+  state.donationPromise = api("/api/donation")
+    .then((donation) => {
+      state.donation = {
+        enabled: donation.enabled === true,
+        provider: String(donation.provider || "Secure payment provider"),
+        url: donation.url || null,
+      };
+      state.donationPromise = null;
+      return state.donation;
+    })
+    .catch(() => {
+      state.donation = { enabled: false, provider: "Secure payment provider", url: null };
+      state.donationPromise = null;
+      return state.donation;
+    });
+  return state.donationPromise;
+}
+
+function requireVerificationSession() {
+  if (isSignedIn()) return true;
+  toast("Log in to verify a claim.", "error");
+  navigate("/login?next=" + encodeURIComponent(window.location.pathname + window.location.search));
+  return false;
 }
 
 function updateNav() {
@@ -211,7 +275,7 @@ function renderHome() {
 
     <section class="section section-tint"><div class="page">
       <div class="stat-grid reveal">
-        <article class="stat-card"><strong data-source-count>214</strong><span>reviewed sources to inspect</span></article>
+        <article class="stat-card"><strong data-source-count>235</strong><span>listed sources to inspect</span></article>
         <article class="stat-card"><strong>0</strong><span>unlisted domains used in checks</span></article>
         <article class="stat-card"><strong>5</strong><span>careful evidence outcomes</span></article>
       </div>
@@ -261,7 +325,7 @@ function renderCheck() {
         <button class="btn btn-primary" id="check-submit" type="submit">Verify with trusted sources <span aria-hidden="true">→</span></button>
         <div class="example-row" aria-label="Example claims"><button class="example-btn" type="button" data-example="Did a hurricane make landfall in the United States yesterday?">Hurricane report</button><button class="example-btn" type="button" data-example="Has an official election result been announced for this area?">Election update</button><button class="example-btn" type="button" data-example="Is this health claim supported by official public-health sources?">Health claim</button></div>
       </form>
-      <aside class="checker-side reveal"><article class="side-note glass-card"><span class="mini-label">01 · Route</span><h3>Choose the relevant evidence boundary.</h3><p>The first AI request only selects categories. It does not search the web or answer the claim.</p></article><article class="side-note glass-card"><span class="mini-label">02 · Check</span><h3>Search the chosen trusted domains.</h3><p>A new request checks only the sources in those categories, and only validated citations can appear in the result.</p></article><article class="side-note glass-card"><h3>What you receive</h3><ul><li>A concise evidence outcome.</li><li>Direct links to the sources used.</li><li>The source categories and registry version.</li></ul></article></aside>
+      <aside class="checker-side reveal"><article class="side-note glass-card"><span class="mini-label">01 · Route</span><h3>Choose the relevant evidence boundary.</h3><p>The first AI request only selects categories. It does not search the web or answer the claim.</p></article><article class="side-note glass-card"><span class="mini-label">02 · Check</span><h3>Search the chosen trusted domains.</h3><p>A new request checks only the sources in those categories, and only validated citations can appear in the result.</p></article><article class="side-note glass-card"><h3>What you receive</h3><ul><li>A concise evidence outcome.</li><li>Direct links to the sources used.</li><li>The source categories selected for your claim.</li></ul></article></aside>
     </section>
     <section class="page result-wrap" id="check-result" aria-live="polite"></section>`;
   bindChecker();
@@ -280,7 +344,7 @@ function renderCheckResult(result) {
   const routing = categoryNames.length
     ? `<section class="selection-trace"><div class="selection-trace-head"><span class="mini-label">Evidence boundary</span><span>${escapeHtml(String(selection.selectedDomainCount || 0))} trusted domains</span></div><div class="selection-steps"><div><b>01</b><span><strong>Categories selected</strong><small>${escapeHtml(categoryNames.join(" · "))}</small></span></div><div><b>02</b><span><strong>Evidence search completed</strong><small>${escapeHtml(String(selection.selectedSourceCount || 0))} listed sources were eligible for this check</small></span></div></div>${selection.reason ? `<p class="selection-reason">${escapeHtml(selection.reason)}</p>` : ""}${selection.truncated ? `<p class="selection-reason">The matching set exceeded the search cap, so Fact-Check used the first 100 approved domains in the selected categories.</p>` : ""}</section>`
     : "";
-  return `<article class="result-card glass-card reveal visible"><div class="result-head"><div><span class="verdict verdict-${verdict}">${escapeHtml(verdictLabel(result.verdict))}</span><h2>What the selected sources indicate</h2></div><div class="checked-time">Checked ${escapeHtml(formatDate(result.checkedAt, { time: true }))}<br />Registry v${escapeHtml(result.registryVersion || "—")}</div></div>${routing}<p class="result-text">${escapeHtml(result.explanation || "No explanation was returned.")}</p><h3 class="result-sources-title">Sources used for this result</h3>${citations ? `<div class="citation-list">${citations}</div>` : `<div class="info-banner">No displayable selected-source link was returned. This result is shown as incomplete evidence.</div>`}</article>`;
+  return `<article class="result-card glass-card reveal visible"><div class="result-head"><div><span class="verdict verdict-${verdict}">${escapeHtml(verdictLabel(result.verdict))}</span><h2>What the selected sources indicate</h2></div><div class="checked-time">Checked ${escapeHtml(formatDate(result.checkedAt, { time: true }))}</div></div>${routing}<p class="result-text">${escapeHtml(result.explanation || "No explanation was returned.")}</p><h3 class="result-sources-title">Sources used for this result</h3>${citations ? `<div class="citation-list">${citations}</div>` : `<div class="info-banner">No displayable selected-source link was returned. This result is shown as incomplete evidence.</div>`}</article>`;
 }
 
 function bindChecker() {
@@ -312,6 +376,7 @@ function bindChecker() {
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (!requireVerificationSession()) return;
     const claim = document.querySelector("#claim").value.trim();
     if (!claim && !imageDataUrl) { toast("Enter a claim or attach an image first.", "error"); return; }
     const button = document.querySelector("#check-submit");
@@ -524,7 +589,7 @@ function renderMethodV2() {
 
 function renderAboutV2() {
   app.innerHTML = `${pageHead("Why it matters", "Media literacy needs <em>practical tools.</em>", "AI can make misleading content more convincing and easier to spread. Fact-Check gives people a concrete way to pause, identify relevant authorities, and inspect the evidence before they share.")}
-    <section class="page about-grid"><article class="about-card glass-card reveal"><span class="eyebrow">Independent youth-led platform</span><h2>Make verification a normal part of receiving information.</h2><p>Fact-Check is designed as a real, transparent platform for media and information literacy. Instead of presenting a black-box “true” or “false” label, it reveals the category boundary, the linked evidence, and the limits of the result.</p><p>Built for the UNICEF Youth Hackathon 2026, it responds to AI-amplified misinformation by making source-aware verification usable in everyday questions, not only in specialist newsrooms.</p></article><article class="about-card glass-card reveal"><span class="eyebrow">Participation with standards</span><h3>Access should be simple. Evidence standards should stay high.</h3><p>Anyone can verify a claim without an account, inspect the public source library, and download its current version. At the same time, source admission is deliberately strict: broad social-platform domains cannot enter an automated allowed-domain boundary.</p><h3>Trust deserves questions.</h3><p>People can inspect citations, question a result, and suggest first-party public authorities for review. That keeps the platform accountable to the communities it is meant to serve.</p></article></section>
+    <section class="page about-grid"><article class="about-card glass-card reveal"><span class="eyebrow">Independent youth-led platform</span><h2>Make verification a normal part of receiving information.</h2><p>Fact-Check is designed as a real, transparent platform for media and information literacy. Instead of presenting a black-box “true” or “false” label, it reveals the category boundary, the linked evidence, and the limits of the result.</p><p>It responds to AI-amplified misinformation by making source-aware verification usable in everyday questions, not only in specialist newsrooms.</p></article><article class="about-card glass-card reveal"><span class="eyebrow">Participation with standards</span><h3>Access should be simple. Evidence standards should stay high.</h3><p>Anyone can inspect the public source library and download its current directory. Signing in is required before a claim or image is sent to the protected verification workflow. At the same time, source admission is deliberately strict: broad social-platform domains cannot enter an automated allowed-domain boundary.</p><h3>Trust deserves questions.</h3><p>People can inspect citations, question a result, and suggest first-party public authorities for review. That keeps the platform accountable to the communities it is meant to serve.</p></article></section>
     <section class="section section-tint"><div class="page"><div class="section-head reveal"><span class="eyebrow">Long-term contribution</span><h2>Grow a culture of checking before sharing.</h2></div><div class="feature-grid"><article class="feature-card glass-card reveal"><span class="feature-number">NOW</span><div class="feature-icon" aria-hidden="true">⌕</div><h3>Make the evidence boundary visible</h3><p>Provide a transparent, categorized registry and concise linked results that are easy to inspect.</p></article><article class="feature-card glass-card reveal"><span class="feature-number">NEXT</span><div class="feature-icon" aria-hidden="true">◌</div><h3>Improve local relevance responsibly</h3><p>Expand first-party public authorities through strict review, especially for the languages and communities using the platform.</p></article><article class="feature-card glass-card reveal"><span class="feature-number">LATER</span><div class="feature-icon" aria-hidden="true">↗</div><h3>Measure evidence quality</h3><p>Continuously evaluate citation quality, source freshness, accessibility, and false-verdict risk as the platform grows.</p></article></div></div></section>`;
 }
 
@@ -708,6 +773,7 @@ function bindAdminAuth(status) {
     button.disabled = true;
     try {
       await api(status.setupAllowed ? "/api/admin/setup" : "/api/admin/login", { method: "POST", body: JSON.stringify({ email, password }) });
+      await refreshCurrentUser();
       toast(status.setupAllowed ? "Admin password created." : "Signed in.", "success");
       render();
     } catch (error) {
@@ -717,11 +783,11 @@ function bindAdminAuth(status) {
 }
 
 function renderLogin() {
-  if (state.currentUser) {
-    navigate("/account");
+  if (isSignedIn()) {
+    navigate(postLoginDestination());
     return;
   }
-  app.innerHTML = `<section class="page page-narrow"><form class="login-box auth-box glass-card reveal visible" id="user-login-form"><span class="eyebrow">Account sign in</span><h1>Log in to Fact-Check.</h1><p class="lead">Use your email and password to access your account. Checking claims and browsing trusted sources remain available without an account.</p><div class="auth-form"><div><label class="form-label" for="login-email">Email address</label><input id="login-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div><div><label class="form-label" for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required /></div><button class="btn btn-primary" type="submit">Log in <span aria-hidden="true">→</span></button></div><p class="auth-switch">Need an account? <a href="/signup" data-route>Create one</a></p><p class="auth-admin">Administrator account? Enter its email above, or <a href="/admin" data-route>sign in directly</a>.</p></form></section>`;
+  app.innerHTML = `<section class="page page-narrow"><form class="login-box auth-box glass-card reveal visible" id="user-login-form"><span class="eyebrow">Account sign in</span><h1>Log in to verify with care.</h1><p class="lead">A Fact-Check account is required before a claim or image is sent for verification. Browsing the source library remains public.</p><div class="auth-form"><div><label class="form-label" for="login-email">Email address</label><input id="login-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div><div><label class="form-label" for="login-password">Password</label><input id="login-password" name="password" type="password" autocomplete="current-password" required /></div><button class="btn btn-primary" type="submit">Log in <span aria-hidden="true">→</span></button></div><p class="auth-switch">Need an account? <a href="/signup${escapeAttr(window.location.search)}" data-route>Create one</a></p><p class="auth-admin">Administrator account? Enter its email above, or <a href="/admin" data-route>sign in directly</a>.</p></form></section>`;
   bindUserLogin();
 }
 
@@ -743,13 +809,15 @@ function bindUserLogin() {
       });
       if (response.administrator) {
         state.currentUser = null;
+        state.adminUser = response.user || null;
         toast("Administrator sign-in successful.", "success");
-        navigate("/admin");
+        navigate(postLoginDestination());
         return;
       }
       state.currentUser = response.user;
+      state.adminUser = null;
       toast("Welcome back.", "success");
-      navigate("/account");
+      navigate(postLoginDestination());
     } catch (error) {
       toast(error.message, "error");
       button.disabled = false;
@@ -759,11 +827,11 @@ function bindUserLogin() {
 }
 
 function renderSignup() {
-  if (state.currentUser) {
-    navigate("/account");
+  if (isSignedIn()) {
+    navigate(postLoginDestination());
     return;
   }
-  app.innerHTML = `<section class="page page-narrow"><form class="login-box auth-box glass-card reveal visible" id="user-signup-form"><span class="eyebrow">Create your account</span><h1>Make checking before sharing a habit.</h1><p class="lead">Create a Fact-Check account in a few seconds. Your account never gives access to the administrator area.</p><div class="auth-form"><div><label class="form-label" for="signup-name">Your name</label><input id="signup-name" name="name" type="text" autocomplete="name" required minlength="2" maxlength="80" /></div><div><label class="form-label" for="signup-email">Email address</label><input id="signup-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div><div><label class="form-label" for="signup-password">Password</label><input id="signup-password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="256" /><span class="form-help">Use at least 12 characters.</span></div><div><label class="form-label" for="signup-confirm-password">Confirm password</label><input id="signup-confirm-password" type="password" autocomplete="new-password" required /></div><button class="btn btn-primary" type="submit">Create account <span aria-hidden="true">→</span></button></div><p class="auth-switch">Already have an account? <a href="/login" data-route>Log in</a></p></form></section>`;
+  app.innerHTML = `<section class="page page-narrow"><form class="login-box auth-box glass-card reveal visible" id="user-signup-form"><span class="eyebrow">Create your account</span><h1>Make checking before sharing a habit.</h1><p class="lead">Create a Fact-Check account in a few seconds. Your account never gives access to the administrator area.</p><div class="auth-form"><div><label class="form-label" for="signup-name">Your name</label><input id="signup-name" name="name" type="text" autocomplete="name" required minlength="2" maxlength="80" /></div><div><label class="form-label" for="signup-email">Email address</label><input id="signup-email" name="email" type="email" autocomplete="email" required maxlength="254" /></div><div><label class="form-label" for="signup-password">Password</label><input id="signup-password" name="password" type="password" autocomplete="new-password" required minlength="12" maxlength="256" /><span class="form-help">Use at least 12 characters.</span></div><div><label class="form-label" for="signup-confirm-password">Confirm password</label><input id="signup-confirm-password" type="password" autocomplete="new-password" required /></div><button class="btn btn-primary" type="submit">Create account <span aria-hidden="true">→</span></button></div><p class="auth-switch">Already have an account? <a href="/login${escapeAttr(window.location.search)}" data-route>Log in</a></p></form></section>`;
   bindUserSignup();
 }
 
@@ -791,8 +859,9 @@ function bindUserSignup() {
         }),
       });
       state.currentUser = response.user;
+      state.adminUser = null;
       toast("Your account is ready.", "success");
-      navigate("/account");
+      navigate(postLoginDestination());
     } catch (error) {
       toast(error.message, "error");
       button.disabled = false;
@@ -801,23 +870,55 @@ function bindUserSignup() {
   });
 }
 
+function donationActionMarkup(donation, { compact = false } = {}) {
+  if (donation.enabled && donation.url) {
+    return `<a class="btn ${compact ? "btn-secondary" : "btn-primary"}" href="${escapeAttr(donation.url)}" target="_blank" rel="noreferrer">Support through ${escapeHtml(donation.provider)} <span aria-hidden="true">↗</span></a>`;
+  }
+  return `<a class="btn ${compact ? "btn-secondary" : "btn-primary"}" href="/donate" data-route>Learn how to support <span aria-hidden="true">→</span></a>`;
+}
+
 async function renderAccount() {
-  app.innerHTML = `<section class="page"><div class="center-loader glass-card"><span class="spinner"></span><span>Loading your account...</span></div></section>`;
+  app.innerHTML = `<section class="page"><div class="center-loader glass-card"><span class="spinner"></span><span>Loading your profile...</span></div></section>`;
   try {
-    const response = await api("/api/auth/status");
-    state.currentUser = response.user || null;
-    updateNav();
-    if (!state.currentUser) {
-      app.innerHTML = `<section class="page page-narrow"><div class="login-box auth-box glass-card reveal visible"><span class="eyebrow">Your account</span><h1>Log in to continue.</h1><p class="lead">You need a Fact-Check account to view this page.</p><div class="inline-actions"><a class="btn btn-primary" href="/login" data-route>Log in <span aria-hidden="true">→</span></a><a class="btn btn-secondary" href="/signup" data-route>Create account</a></div></div></section>`;
+    const [profile, donation] = await Promise.all([refreshCurrentUser(), loadDonationConfig()]);
+    if (!profile) {
+      app.innerHTML = `<section class="page page-narrow"><div class="login-box auth-box glass-card reveal visible"><span class="eyebrow">Your profile</span><h1>Log in to continue.</h1><p class="lead">A Fact-Check account is required to verify claims and view your profile.</p><div class="inline-actions"><a class="btn btn-primary" href="/login?next=%2Faccount" data-route>Log in <span aria-hidden="true">→</span></a><a class="btn btn-secondary" href="/signup?next=%2Faccount" data-route>Create account</a></div></div></section>`;
       observeReveals();
       return;
     }
-    const user = state.currentUser;
-    app.innerHTML = `<section class="page page-narrow"><article class="account-card glass-card reveal visible"><span class="eyebrow">Your Fact-Check account</span><h1>Hello, ${escapeHtml(user.name)}.</h1><p class="account-email">${escapeHtml(user.email)}</p><div class="callout"><span class="callout-icon" aria-hidden="true">✓</span><div><h3>Your account is separate from the administrator area.</h3><p>It does not grant access to source management. Fact-checking remains open to everyone, and the public source list is always available.</p></div></div><div class="account-actions"><a class="btn btn-primary" href="/check" data-route>Check a claim <span aria-hidden="true">→</span></a><a class="btn btn-secondary" href="/sources" data-route>Browse sources</a></div></article></section>`;
+
+    const administrator = Boolean(state.adminUser);
+    const user = profile;
+    const accountType = administrator ? "Administrator profile" : "Member profile";
+    const accessCopy = administrator
+      ? "Your administrator session is active. You can manage the source registry from the protected control panel."
+      : "Your account is ready to use the verification workspace. Source browsing remains public, while claim checks require sign-in.";
+    const adminPanel = administrator
+      ? `<a class="btn btn-secondary" href="/admin" data-route>Open admin panel <span aria-hidden="true">→</span></a>`
+      : "";
+    const donationStatus = donation.enabled
+      ? `Contributions are securely processed by ${escapeHtml(donation.provider)} on its hosted payment page.`
+      : "Donations are being prepared. The donation page explains the secure provider setup required before any payment is accepted.";
+
+    app.innerHTML = `<section class="page profile-page"><article class="profile-hero glass-card reveal visible"><div class="profile-identity"><div class="profile-avatar" aria-hidden="true">${escapeHtml(profileInitials(user))}</div><div><span class="eyebrow">${accountType}</span><h1>${escapeHtml(user.name)}</h1><p class="account-email">${escapeHtml(user.email)}</p><p class="profile-member">Member since ${escapeHtml(formatDate(user.createdAt, { short: true }))}</p></div></div><div class="profile-session"><span class="status-pill">● Signed in</span><span>${administrator ? "Registry manager" : "Verification member"}</span></div></article><section class="profile-grid"><article class="profile-panel glass-card reveal"><span class="mini-label">Account access</span><h2>Your verification space is ready.</h2><p>${accessCopy}</p><div class="profile-actions"><a class="btn btn-primary" href="/check" data-route>Verify a claim <span aria-hidden="true">→</span></a><a class="btn btn-secondary" href="/sources" data-route>Browse sources</a>${adminPanel}</div></article><article class="profile-panel glass-card reveal"><span class="mini-label">Account details</span><h2>Clear, private, in your control.</h2><dl class="profile-details"><div><dt>Email address</dt><dd>${escapeHtml(user.email)}</dd></div><div><dt>Account role</dt><dd>${administrator ? "Administrator" : "Member"}</dd></div><div><dt>Verification access</dt><dd>Enabled</dd></div></dl></article><article class="profile-panel profile-support glass-card reveal"><span class="mini-label">Support Fact-Check</span><h2>Help keep evidence access open.</h2><p>${donationStatus}</p><div class="profile-actions">${donationActionMarkup(donation)}<a class="text-action" href="/donate" data-route>See support details →</a></div></article><article class="profile-panel glass-card reveal"><span class="mini-label">What stays public</span><h2>Source transparency, without open access to checks.</h2><p>The public source library and method stay open to everyone. Your profile gives you access to the protected verification workspace and its account safeguards.</p><a class="text-action" href="/method" data-route>Read the verification method →</a></article></section></section>`;
     observeReveals();
   } catch (error) {
     app.innerHTML = `<section class="page"><div class="warning">${escapeHtml(error.message)}</div></section>`;
   }
+}
+
+async function renderDonate() {
+  app.innerHTML = `<section class="page"><div class="center-loader glass-card"><span class="spinner"></span><span>Loading support options...</span></div></section>`;
+  const donation = await loadDonationConfig();
+  const provider = escapeHtml(donation.provider);
+  const paymentAction = donation.enabled && donation.url
+    ? `<a class="btn btn-primary" href="${escapeAttr(donation.url)}" target="_blank" rel="noreferrer">Continue to ${provider} <span aria-hidden="true">↗</span></a>`
+    : `<a class="btn btn-primary" href="mailto:oktabrovumrbek2023@gmail.com?subject=Supporting%20Fact-Check">Contact us about supporting <span aria-hidden="true">→</span></a>`;
+  const readiness = donation.enabled
+    ? `A hosted ${provider} payment page is available. Fact-Check does not collect, process, or store payment-card details.`
+    : `A live payment link has not been configured yet. Before accepting contributions, connect an approved provider and add its HTTPS payment link to the private server configuration.`;
+  app.innerHTML = `${pageHead("Support Fact-Check", "Keep evidence tools <em>accessible.</em>", "Your support can help maintain a transparent source registry, improve media-literacy access, and keep verification focused on evidence rather than advertising.")}<section class="page donation-layout"><article class="donation-hero glass-card reveal"><span class="status-pill">Independent support</span><h2>Contribute through a secure hosted checkout.</h2><p>${readiness}</p><div class="donation-actions">${paymentAction}<a class="btn btn-secondary" href="/sources" data-route>See the public source library</a></div><p class="donation-fineprint">Contributions are voluntary. They do not influence fact-check outcomes, source admission, or the visibility of any claim.</p></article><aside class="donation-sidebar"><article class="donation-note glass-card reveal"><span class="mini-label">Where support goes</span><h3>Trust infrastructure</h3><p>Source-governance reviews, accessibility improvements, and the ongoing cost of secure evidence checks.</p></article><article class="donation-note glass-card reveal"><span class="mini-label">Payment privacy</span><h3>Your card details stay with ${provider}.</h3><p>Fact-Check uses a hosted provider page instead of embedding card fields in this website.</p></article><article class="donation-note glass-card reveal"><span class="mini-label">Transparency</span><h3>Support never buys a verdict.</h3><p>Verification remains bound to the same public source rules for everyone.</p></article></aside></section><section class="page donation-next reveal"><div class="callout"><span class="callout-icon" aria-hidden="true">i</span><div><h3>Want to support another way?</h3><p>Contact the project team to discuss a partnership, in-kind support, or an institutional contribution.</p></div><a class="text-action" href="/contact" data-route>Contact Fact-Check →</a></div></section>`;
+  observeReveals();
 }
 
 function renderNotFound() {
@@ -827,7 +928,7 @@ function renderNotFound() {
 function render() {
   const pathname = window.location.pathname.replace(/\/$/, "") || "/";
   document.title = titleFor(pathname);
-  const renderers = { "/": renderHome, "/check": renderCheck, "/sources": renderSources, "/method": renderMethodV2, "/about": renderAboutV2, "/contact": renderContact, "/privacy": renderPrivacy, "/accessibility": renderAccessibility, "/login": renderLogin, "/signup": renderSignup, "/account": renderAccount, "/admin": renderAdmin };
+  const renderers = { "/": renderHome, "/check": renderCheck, "/sources": renderSources, "/method": renderMethodV2, "/about": renderAboutV2, "/contact": renderContact, "/privacy": renderPrivacy, "/accessibility": renderAccessibility, "/login": renderLogin, "/signup": renderSignup, "/account": renderAccount, "/donate": renderDonate, "/admin": renderAdmin };
   (renderers[pathname] || renderNotFound)();
   updateNav();
   observeReveals();

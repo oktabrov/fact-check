@@ -10,11 +10,12 @@ Fact-Check is independently built by Umrbek Oktyabrov for the UNICEF Youth Hacka
 
 ## How verification works
 
-Fact-Check deliberately separates routing from evidence generation:
+Fact-Check protects verification with an account gate, then separates routing from evidence generation:
 
-1. **Category routing** — A first OpenAI request receives the claim and the fixed source taxonomy. It selects the smallest relevant set of source categories. This request has no web-search tool and cannot return a verdict.
-2. **Restricted evidence search** — A separate OpenAI request receives only the domains and source links in those selected categories. Its web search is restricted by an allowed-domain boundary, then all returned citations are validated server-side.
-3. **Short, inspectable result** — The platform displays a concise evidence outcome, categories used, source count, direct citations, check time, and registry version.
+1. **Account gate** — A signed-in member or administrator is required before `/api/check` accepts a request. The server rejects unauthenticated requests before parsing their body or calling AI.
+2. **Category routing** — A first OpenAI request receives the claim and the fixed source taxonomy. It selects the smallest relevant set of source categories. This request has no web-search tool and cannot return a verdict.
+3. **Restricted evidence search** — A separate OpenAI request receives only the domains and source links in those selected categories. Its web search is restricted by an allowed-domain boundary, then all returned citations are validated server-side.
+4. **Short, inspectable result** — The platform displays a concise evidence outcome, categories used, source count, direct citations, and check time.
 
 For example, a question about whether cash can be used in Uzbekistan is routed to **Economy and finance** and **Government and law** before it can search evidence. It does not search unrelated weather, health, social-media, or open-web sources.
 
@@ -74,8 +75,9 @@ The source list is public at /sources and downloadable at /api/sources.pdf. The 
 2. Copy the values in environment.example.env into a private environment.env file.
 3. Set DATABASE_URL, for example: postgresql://postgres:your-password@localhost:5432/fact_check
 4. Set OPENAI_API_KEY (or api_key), ADMIN_EMAIL, and a strong ADMIN_PASSWORD. The administrator account is bootstrapped into PostgreSQL as an `admin` role when setup runs.
-5. Run npm run db:setup.
-6. Run npm start, then open http://localhost:3000.
+5. Optional: set `DONATION_PROVIDER` and an HTTPS `DONATION_URL` to a hosted payment page. The application only links to that page; it never handles card data or stores payment secrets.
+6. Run npm run db:setup.
+7. Run npm start, then open http://localhost:3000.
 
 ### Local PostgreSQL with Docker
 
@@ -100,7 +102,7 @@ Stop the local database with `docker compose stop postgres`. Its data is retaine
 - Deploy behind HTTPS.
 - Keep environment.env private; it contains the OpenAI key, PostgreSQL URL, and administrator credentials.
 - Set DATABASE_SSL=true when the PostgreSQL provider requires TLS. Certificate validation stays on by default; only disable it when a provider explicitly requires that exception.
-- Add edge/WAF rate limiting and bot protection before a multi-instance public launch; the application also limits anonymous verification requests to control paid AI use.
+- Add edge/WAF rate limiting and bot protection before a multi-instance public launch; the application also rate-limits authenticated verification requests to control paid AI use.
 - Run npm test before deployment.
 - Publish a privacy notice, accessibility statement, and human-review escalation route before opening the platform to the public.
 

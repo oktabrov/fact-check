@@ -28,6 +28,19 @@ const REVIEWED_USAGE_STATUSES = new Set([
   "reviewed-open-license",
 ]);
 
+function publicDonationConfig(config) {
+  const provider = String(config.donationProvider || "Secure payment provider").trim().slice(0, 80) || "Secure payment provider";
+  const rawUrl = String(config.donationUrl || "").trim();
+  if (!rawUrl) return { enabled: false, provider, url: null };
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol !== "https:" || url.username || url.password) throw new Error("Invalid donation URL");
+    return { enabled: true, provider, url: url.toString() };
+  } catch {
+    return { enabled: false, provider, url: null };
+  }
+}
+
 function securityHeaders(response) {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -308,7 +321,10 @@ export function createApp(options = {}) {
       }
 
       if (pathname === "/api/auth/status" && request.method === "GET") {
-        return sendJson(response, 200, { user: await userAuth.currentUser(request) });
+        return sendJson(response, 200, {
+          user: await userAuth.currentUser(request),
+          administrator: await adminAuth.currentUser(request),
+        });
       }
 
       if (pathname === "/api/auth/signup" && request.method === "POST") {
@@ -333,7 +349,7 @@ export function createApp(options = {}) {
         if (account.administrator) {
           const token = await adminAuth.login(String(body.email || ""), String(body.password || ""));
           if (!token) return sendError(response, 401, "Email or password is not correct.");
-          return sendJson(response, 200, { administrator: true }, { "Set-Cookie": adminAuth.cookie(token) });
+          return sendJson(response, 200, { administrator: true, user: account.user }, { "Set-Cookie": adminAuth.cookie(token) });
         }
         return sendJson(response, 200, { user: account.user }, { "Set-Cookie": userAuth.cookie(account.token) });
       }
@@ -343,7 +359,16 @@ export function createApp(options = {}) {
         return sendJson(response, 200, { ok: true }, { "Set-Cookie": userAuth.expiredCookie() });
       }
 
+      if (pathname === "/api/donation" && request.method === "GET") {
+        return sendJson(response, 200, publicDonationConfig(config));
+      }
+
       if (pathname === "/api/check" && request.method === "POST") {
+        const authenticatedUser = await userAuth.currentUser(request);
+        const authenticatedAdministrator = authenticatedUser ? null : await adminAuth.currentUser(request);
+        if (!authenticatedUser && !authenticatedAdministrator) {
+          return sendError(response, 401, "Log in to verify a claim.");
+        }
         if (!claimAttemptAllowed(request)) return sendError(response, 429, "Too many verification requests from this connection. Please wait a few minutes and try again.");
         const body = await readJson(request);
         const claim = String(body.claim || "").trim();

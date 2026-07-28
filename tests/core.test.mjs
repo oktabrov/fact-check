@@ -173,6 +173,8 @@ test("public user sessions cannot access administrator routes", async () => {
       apiKey: "",
       adminEmail: TEST_ADMIN_EMAIL,
       adminPassword: TEST_ADMIN_PASSWORD,
+      donationProvider: "Stripe",
+      donationUrl: "https://donate.example/fact-check",
       model: "test-model",
       nodeEnv: "test",
       port: 0,
@@ -191,6 +193,14 @@ test("public user sessions cannot access administrator routes", async () => {
     assert.equal(sourceData.sourceCount, 235);
     assert.equal(sourceData.categoryCounts.length, 10);
 
+    const donation = await fetch(baseUrl + "/api/donation");
+    assert.equal(donation.status, 200);
+    assert.deepEqual(await donation.json(), {
+      enabled: true,
+      provider: "Stripe",
+      url: "https://donate.example/fact-check",
+    });
+
     const signup = await fetch(baseUrl + "/api/auth/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -203,7 +213,9 @@ test("public user sessions cannot access administrator routes", async () => {
 
     const status = await fetch(baseUrl + "/api/auth/status", { headers: { Cookie: userCookie } });
     assert.equal(status.status, 200);
-    assert.equal((await status.json()).user.name, "Amina Karimova");
+    const statusPayload = await status.json();
+    assert.equal(statusPayload.user.name, "Amina Karimova");
+    assert.equal(statusPayload.administrator, null);
 
     const blocked = await fetch(baseUrl + "/api/admin/sources", { headers: { Cookie: userCookie } });
     assert.equal(blocked.status, 401);
@@ -216,9 +228,18 @@ test("public user sessions cannot access administrator routes", async () => {
     const administratorLoginPayload = await loginAsAdministrator.json();
     assert.equal(loginAsAdministrator.status, 200, JSON.stringify(administratorLoginPayload));
     assert.equal(administratorLoginPayload.administrator, true);
+    assert.equal(administratorLoginPayload.user.email, TEST_ADMIN_EMAIL);
     const redirectedAdminCookie = loginAsAdministrator.headers.get("set-cookie").split(";")[0];
+    const administratorStatus = await fetch(baseUrl + "/api/auth/status", { headers: { Cookie: redirectedAdminCookie } });
+    assert.equal((await administratorStatus.json()).administrator.email, TEST_ADMIN_EMAIL);
     const redirectedAllowed = await fetch(baseUrl + "/api/admin/sources", { headers: { Cookie: redirectedAdminCookie } });
     assert.equal(redirectedAllowed.status, 200);
+    const administratorCheck = await fetch(baseUrl + "/api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: redirectedAdminCookie },
+      body: JSON.stringify({ claim: "Can an administrator access the protected verification route?" }),
+    });
+    assert.equal(administratorCheck.status, 503);
 
     const adminLogin = await fetch(baseUrl + "/api/admin/login", {
       method: "POST",
@@ -235,12 +256,58 @@ test("public user sessions cannot access administrator routes", async () => {
   }
 });
 
+test("unauthenticated verification stops before parsing a request or calling AI", async () => {
+  const pool = await testDatabase({ seed: true });
+  const events = [];
+  const app = createApp({
+    pool,
+    config: {
+      apiKey: "test-key",
+      adminEmail: TEST_ADMIN_EMAIL,
+      adminPassword: TEST_ADMIN_PASSWORD,
+      model: "test-model",
+      nodeEnv: "test",
+      port: 0,
+    },
+    classifyClaimCategories: async () => {
+      events.push("classify");
+      return { categoryKeys: ["government-and-law"], reason: "Should never run." };
+    },
+    checkClaimWithOpenAI: async () => {
+      events.push("check");
+      return { verdict: "INSUFFICIENT", explanation: "Should never run.", sources: [], checkedAt: "2026-07-28T00:00:00.000Z", model: "test-model" };
+    },
+  });
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
+  const port = app.address().port;
+  try {
+    const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{not valid JSON",
+    });
+    assert.equal(response.status, 401);
+    assert.equal((await response.json()).error, "Log in to verify a claim.");
+    assert.deepEqual(events, []);
+  } finally {
+    await new Promise((resolve) => app.close(resolve));
+    await pool.end();
+  }
+});
+
 test("claim checks classify categories before a separate restricted evidence request", async () => {
   const pool = await testDatabase({ seed: true });
   const events = [];
   let evidenceArguments;
+  const userAuth = createUserAuth({ pool });
+  const signedIn = await userAuth.signup({
+    name: "Amina Karimova",
+    email: "amina@example.com",
+    password: "a-long-user-test-password",
+  });
   const app = createApp({
     pool,
+    userAuth,
     config: {
       apiKey: "test-key",
       adminEmail: TEST_ADMIN_EMAIL,
@@ -278,7 +345,7 @@ test("claim checks classify categories before a separate restricted evidence req
   try {
     const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Cookie: "fact_check_user=" + signedIn.token },
       body: JSON.stringify({ claim: "O'zbekistonda naqd pul ishlatish mumkin emasmi?" }),
     });
     assert.equal(response.status, 200);
@@ -294,10 +361,17 @@ test("claim checks classify categories before a separate restricted evidence req
   }
 });
 
-test("anonymous claim checks are rate-limited before paid AI work", async () => {
+test("authenticated claim checks are rate-limited before paid AI work", async () => {
   const pool = await testDatabase({ seed: true });
+  const userAuth = createUserAuth({ pool });
+  const signedIn = await userAuth.signup({
+    name: "Amina Karimova",
+    email: "amina@example.com",
+    password: "a-long-user-test-password",
+  });
   const app = createApp({
     pool,
+    userAuth,
     config: {
       apiKey: "test-key",
       adminEmail: TEST_ADMIN_EMAIL,
@@ -326,7 +400,7 @@ test("anonymous claim checks are rate-limited before paid AI work", async () => 
     for (let attempt = 0; attempt < 9; attempt += 1) {
       const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Cookie: "fact_check_user=" + signedIn.token },
         body: JSON.stringify({ claim: "Is this public notice accurate?" }),
       });
       statuses.push(response.status);
