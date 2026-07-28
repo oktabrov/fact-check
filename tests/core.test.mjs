@@ -46,18 +46,26 @@ test("PostgreSQL source registry preserves the trusted-domain boundary", async (
   }
 });
 
-test("PostgreSQL migration seeds the categorized 214-source public registry once", async () => {
+test("PostgreSQL migration seeds the categorized 235-source public registry once", async () => {
   const pool = await testDatabase();
   try {
     const firstSeed = await seedTrustedSources(pool);
     const secondSeed = await seedTrustedSources(pool);
     const snapshot = await createSourceStore(pool).snapshot();
-    assert.equal(firstSeed.seeded, 214);
+    assert.equal(firstSeed.seeded, 235);
     assert.equal(secondSeed.skipped, true);
-    assert.equal(snapshot.sources.length, 214);
-    assert.equal((await createSourceStore(pool).activeDomains()).length, 214);
+    assert.equal(snapshot.sources.length, 235);
+    assert.equal((await createSourceStore(pool).activeDomains()).length, 235);
     assert.equal(snapshot.sources.find((source) => source.id === "src-106").categoryKey, "economy-and-finance");
     assert.ok(snapshot.sources.some((source) => source.categoryKey === "weather-and-emergencies"));
+    const reviewedSource = snapshot.sources.find((source) => source.id === "src-215");
+    assert.deepEqual(
+      { usageStatus: reviewedSource?.usageStatus, usagePolicyUrl: reviewedSource?.usagePolicyUrl },
+      {
+        usageStatus: "reviewed-link-and-citation",
+        usagePolicyUrl: "https://data.gov/privacy-policy/",
+      },
+    );
   } finally {
     await pool.end();
   }
@@ -67,10 +75,11 @@ test("generated trusted-source PDF has a valid PDF header", () => {
   const pdf = trustedSourcesPdf({
     version: 7,
     updatedAt: "2026-07-27T00:00:00.000Z",
-    sources: [{ name: "WHO", url: "https://www.who.int/", category: "Authority", rationale: "Global health authority." }],
+    sources: [{ name: "WHO", url: "https://www.who.int/", category: "Authority", rationale: "Global health authority.", usageStatus: "reviewed-link-and-citation", usagePolicyUrl: "https://www.who.int/about/policies" }],
   });
   assert.equal(pdf.subarray(0, 8).toString("latin1"), "%PDF-1.4");
   assert.ok(pdf.toString("latin1").includes("Fact-Check"));
+  assert.ok(pdf.toString("latin1").includes("Published source terms"));
 });
 
 test("category selection keeps each evidence search inside selected source categories", async () => {
@@ -179,7 +188,7 @@ test("public user sessions cannot access administrator routes", async () => {
   try {
     const sourceResponse = await fetch(baseUrl + "/api/sources");
     const sourceData = await sourceResponse.json();
-    assert.equal(sourceData.sourceCount, 214);
+    assert.equal(sourceData.sourceCount, 235);
     assert.equal(sourceData.categoryCounts.length, 10);
 
     const signup = await fetch(baseUrl + "/api/auth/signup", {
@@ -376,6 +385,18 @@ test("administrator source admission assigns the AI-reviewed category and record
     });
     assert.equal(preview.status, 200);
     assert.equal((await preview.json()).assessment.eligible, false);
+    const missingUsageReview = await fetch("http://127.0.0.1:" + port + "/api/admin/sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({
+        name: "No source-use review",
+        url: "https://terms-missing.example/",
+        rationale: "Official authority submitted without a terms or licence record.",
+        manualReviewed: true,
+      }),
+    });
+    assert.equal(missingUsageReview.status, 400);
+    assert.match((await missingUsageReview.json()).error, /source was reviewed|source-use review/i);
     const added = await fetch("http://127.0.0.1:" + port + "/api/admin/sources", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
@@ -384,6 +405,10 @@ test("administrator source admission assigns the AI-reviewed category and record
         url: "https://centralbank.example/",
         rationale: "Official central-bank source for monetary policy and payment rules.",
         categoryKey: "public-health",
+        usageStatus: "reviewed-link-and-citation",
+        usagePolicyUrl: "https://centralbank.example/terms",
+        usageReviewNote: "The official terms were reviewed for direct linking and citation.",
+        usageReviewed: true,
         manualReviewed: true,
       }),
     });
@@ -391,9 +416,12 @@ test("administrator source admission assigns the AI-reviewed category and record
     const body = await added.json();
     assert.equal(body.source.categoryKey, "economy-and-finance");
     assert.equal(body.source.category, "Economy and finance");
-    const review = await pool.query("SELECT source_id FROM source_admission_reviews WHERE candidate_domain = 'centralbank.example'");
+    const review = await pool.query("SELECT source_id, usage_status, usage_policy_url, usage_reviewed FROM source_admission_reviews WHERE candidate_domain = 'centralbank.example'");
     assert.equal(review.rows.length, 1);
     assert.equal(review.rows[0].source_id, body.source.id);
+    assert.equal(review.rows[0].usage_status, "reviewed-link-and-citation");
+    assert.equal(review.rows[0].usage_policy_url, "https://centralbank.example/terms");
+    assert.equal(review.rows[0].usage_reviewed, true);
     const unlinkedPreview = await pool.query("SELECT source_id, eligible FROM source_admission_reviews WHERE candidate_domain = 'unclear.example'");
     assert.equal(unlinkedPreview.rows.length, 1);
     assert.equal(unlinkedPreview.rows[0].source_id, null);

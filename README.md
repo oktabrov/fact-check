@@ -6,6 +6,8 @@ Fact-Check is an evidence-led Media and Information Literacy platform. It helps 
 
 Fact-Check is independently built by Umrbek Oktyabrov for the UNICEF Youth Hackathon 2026. It is not affiliated with or endorsed by UNICEF.
 
+`Registry v4` means the fourth recorded state of the public source boundary. It is an audit/version identifier for reproducibility, not an accuracy score, model version, or count of sources.
+
 ## How verification works
 
 Fact-Check deliberately separates routing from evidence generation:
@@ -18,7 +20,7 @@ For example, a question about whether cash can be used in Uzbekistan is routed t
 
 ## Trusted-source governance
 
-The public registry currently seeds **214 reviewed sources** across ten categories:
+The public registry currently seeds **235 first-party sources** across ten categories. The original registry is retained as an evidence boundary and is undergoing a staged source-use review; **21 newly added sources** include a documented official terms or licence link:
 
 - International institutions
 - Government and law
@@ -39,7 +41,14 @@ New administrator submissions are handled as a source-admission workflow:
 2. An AI source-review request searches only that candidate domain and assigns a category.
 3. The review must be high confidence and eligible.
 4. The administrator must manually confirm official ownership and evidence scope.
-5. The review outcome is written to a PostgreSQL audit table.
+5. The administrator must link the source’s official terms or licence page, record whether it permits linking/citation only or published open reuse, and confirm that review.
+6. The review outcome is written to a PostgreSQL audit table.
+
+### Source use and licensing
+
+Fact-Check is an evidence-navigation platform, not a content mirror. It links to and cites the original sources; it does **not** copy their articles, images, logos, marks, videos, or database dumps into the platform. A “published reuse terms” status only describes source-owned material covered by the linked official licence. It never overrides exclusions for trademarks, logos, photos, personal data, third-party rights, or individual dataset terms.
+
+Every new source must have an official policy or licence URL before it can be admitted. The public directory and its downloadable PDF show that URL when the review is complete. This is a documented usage review, not legal advice or a claim that all material on a source domain has the same permissions.
 
 Social platforms such as Telegram, Facebook, Instagram, X, TikTok, and YouTube are intentionally excluded from the automated registry. An allowed-domain filter for a platform would authorize every account on that platform, not only an official channel.
 
@@ -51,7 +60,7 @@ The enforced boundary is an approved HTTPS **domain** selected from the public r
 
 Fact-Check stores production data in PostgreSQL:
 
-- **trusted_sources** — public source registry, category keys, active state, and rationale
+- **trusted_sources** — public source registry, category keys, active state, rationale, and source-use review metadata
 - **source_registry** — version and update timestamp for reproducible results
 - **source_admission_reviews** — AI admission assessment and manual-review audit entries
 - **app_users** — regular and administrator accounts with salted scrypt password hashes and explicit roles

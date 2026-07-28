@@ -23,6 +23,11 @@ const MIME_TYPES = {
   ".ico": "image/x-icon",
 };
 
+const REVIEWED_USAGE_STATUSES = new Set([
+  "reviewed-link-and-citation",
+  "reviewed-open-license",
+]);
+
 function securityHeaders(response) {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -169,6 +174,33 @@ export function createApp(options = {}) {
     return true;
   }
 
+  function sourceUsageFromRequest(body, existing = null, { requireConfirmation = false } = {}) {
+    const usageStatus = String(body.usageStatus || existing?.usageStatus || "").trim();
+    const rawUsagePolicyUrl = String(body.usagePolicyUrl || existing?.usagePolicyUrl || "").trim();
+    const usageReviewNote = String(body.usageReviewNote || existing?.usageReviewNote || "").trim().replace(/\s+/g, " ");
+    const usageReviewed = body.usageReviewed === true;
+    if (!REVIEWED_USAGE_STATUSES.has(usageStatus)) {
+      throw new Error("Choose whether the source was reviewed for link-and-citation use or an open reuse licence.");
+    }
+    if (!rawUsagePolicyUrl) {
+      throw new Error("Add the source's official terms or licence URL before adding it.");
+    }
+    const usagePolicyUrl = canonicalUrl(rawUsagePolicyUrl);
+    if (usageReviewNote.length < 8 || usageReviewNote.length > 420) {
+      throw new Error("Add a short source-usage note explaining the official terms or licence.");
+    }
+    if (requireConfirmation && !usageReviewed) {
+      throw new Error("Confirm that you reviewed the source's official terms or licence before adding it.");
+    }
+    return {
+      usageStatus,
+      usagePolicyUrl,
+      usageReviewNote,
+      usageReviewed,
+      usageReviewedAt: new Date().toISOString(),
+    };
+  }
+
   async function assessSourceAdmission(body, existing = null, { manualReviewed = false, requireManualReview = true, allowIneligiblePreview = false } = {}) {
     if (!config.apiKey) throw new Error("The source-admission AI key is not configured on this server.");
     const candidateUrl = canonicalUrl(body.url || existing?.url || "");
@@ -185,6 +217,9 @@ export function createApp(options = {}) {
     };
     if (candidate.name.length < 2) throw new Error("A source name is required.");
     if (candidate.rationale.length < 8) throw new Error("Please add a short reason for trusting this source.");
+    const usage = requireManualReview
+      ? sourceUsageFromRequest(body, existing, { requireConfirmation: true })
+      : null;
     const assessment = await sourceAssessor({
       apiKey: config.apiKey,
       model: config.model,
@@ -197,6 +232,7 @@ export function createApp(options = {}) {
       categoryKey: assessment.categoryKey,
       eligible: assessment.eligible,
       manualReviewed,
+      ...(usage || {}),
       reason: assessment.reason || "No source-admission explanation was returned.",
     };
 
@@ -222,13 +258,14 @@ export function createApp(options = {}) {
       ...candidate,
       categoryKey: assessment.categoryKey,
       category: categoryLabel(assessment.categoryKey),
+      ...(usage || {}),
       admission: assessment,
       review,
     };
   }
 
   function sourceFieldsFromRequest(body) {
-    const fields = ["name", "url", "rationale", "description", "active"];
+    const fields = ["name", "url", "rationale", "description", "active", "usageStatus", "usagePolicyUrl", "usageReviewNote", "usageReviewedAt"];
     return Object.fromEntries(fields.filter((field) => Object.hasOwn(body, field)).map((field) => [field, body[field]]));
   }
 
@@ -430,7 +467,7 @@ export function createApp(options = {}) {
             return sendError(response, 400, "Source categories are assigned by the source-admission review.");
           }
           const sourceFields = sourceFieldsFromRequest(body);
-          const needsReview = ["name", "url", "rationale", "description"].some((field) => Object.hasOwn(body, field));
+          const needsReview = ["name", "url", "rationale", "description", "usageStatus", "usagePolicyUrl", "usageReviewNote"].some((field) => Object.hasOwn(body, field));
           if (!needsReview) return sendJson(response, 200, await sourceStore.update(id, sourceFields));
           const existing = await sourceStore.get(id);
           if (!existing) return sendError(response, 404, "Source not found.");
@@ -459,7 +496,7 @@ export function createApp(options = {}) {
           ? 409
           : /not found/i.test(message)
             ? 404
-            : /required|valid|between|password|keep|smaller|active domains|more than 100|category|not admitted|manual review|social-platform/i.test(message)
+            : /required|valid|https|between|password|keep|smaller|active domains|more than 100|category|not admitted|manual review|social-platform|licen[cs]e|terms|usage/i.test(message)
               ? 400
               : /sign in|not allowed/i.test(message)
                 ? 403
