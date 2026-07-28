@@ -68,6 +68,18 @@ The source list is public at /sources and downloadable at /api/sources.pdf. The 
 5. Run npm run db:setup.
 6. Run npm start, then open http://localhost:3000.
 
+### Local PostgreSQL with Docker
+
+This repository includes a local-only PostgreSQL Compose service. It uses port `5433` to avoid conflicting with another PostgreSQL installation on port `5432`.
+
+1. Copy `postgres.local.env.example` to `postgres.local.env`, then choose a long local database password.
+2. Add the matching URL to `environment.env`: `DATABASE_URL=postgresql://fact_check_app:your-password@127.0.0.1:5433/fact_check`.
+3. Keep `postgres.local.env` and `environment.env` private; both are ignored by Git.
+4. Run `docker compose up -d postgres`.
+5. Run `npm run db:setup`, then `npm start`.
+
+Stop the local database with `docker compose stop postgres`. Its data is retained in the `fact_check_postgres_data` Docker volume.
+
 ## Database commands
 
 - npm run db:migrate applies versioned PostgreSQL migrations.

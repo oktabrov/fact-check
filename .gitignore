@@ -1,3 +1,4 @@
 environment.env
+postgres.local.env
 node_modules/
 .DS_Store
