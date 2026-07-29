@@ -217,6 +217,9 @@ test("public user sessions cannot access administrator routes", async () => {
       (await healthResponse.json()).automatedCheckSources,
       20,
     );
+    const healthHeadResponse = await fetch(baseUrl + "/api/health", { method: "HEAD" });
+    assert.equal(healthHeadResponse.status, 200);
+    assert.equal(healthHeadResponse.headers.get("content-type"), "application/json; charset=utf-8");
 
     const donation = await fetch(baseUrl + "/api/donation");
     assert.equal(donation.status, 200);

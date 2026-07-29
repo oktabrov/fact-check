@@ -329,11 +329,11 @@ export function createApp(options = {}) {
     if (!pathname) return sendError(response, 400, "Invalid request path.");
 
     try {
-      if (pathname === "/api/health" && request.method === "GET") {
+      if (pathname === "/api/health" && (request.method === "GET" || request.method === "HEAD")) {
         const snapshot = await sourceStore.snapshot();
         const activeSources = activeSourcesFromSnapshot(snapshot);
         const automatedCheckSources = automatedCheckSourcesFromSnapshot(snapshot);
-        return sendJson(response, 200, {
+        const health = {
           ok: true,
           database: "postgresql",
           apiConfigured: Boolean(config.apiKey),
@@ -342,7 +342,12 @@ export function createApp(options = {}) {
           automatedCheckSources: automatedCheckSources.length,
           automatedCheckDomains: domainsFromSources(automatedCheckSources).length,
           model: config.model,
-        });
+        };
+        if (request.method === "HEAD") {
+          response.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+          return response.end();
+        }
+        return sendJson(response, 200, health);
       }
 
       if (pathname === "/api/sources" && request.method === "GET") {
