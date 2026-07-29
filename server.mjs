@@ -110,8 +110,44 @@ function activeSourcesFromSnapshot(snapshot) {
   return snapshot.sources.filter((source) => source.active);
 }
 
+function automatedCheckSourcesFromSnapshot(snapshot) {
+  return activeSourcesFromSnapshot(snapshot).filter((source) => (
+    REVIEWED_USAGE_STATUSES.has(source.usageStatus) && Boolean(source.usagePolicyUrl)
+  ));
+}
+
 function domainsFromSources(sources) {
   return [...new Set(sources.map((source) => source.domain))].sort();
+}
+
+function sourceLabelForSelectedUrl(candidate, sources) {
+  try {
+    const checkedUrl = new URL(candidate);
+    if (checkedUrl.protocol !== "https:") return "";
+    const domain = sourceDomain(checkedUrl);
+    const match = sources.find((source) => domain === source.domain || domain.endsWith("." + source.domain));
+    return match?.name || "";
+  } catch {
+    return "";
+  }
+}
+
+function publicCitations(sources, isApprovedUrl, sourceLabelForUrl) {
+  const citations = [];
+  const seen = new Set();
+  for (const source of Array.isArray(sources) ? sources : []) {
+    const url = String(source?.url || "").trim();
+    if (!url || seen.has(url) || !isApprovedUrl(url)) continue;
+    const suppliedTitle = String(source?.title || "").replace(/\s+/g, " ").trim().slice(0, 200);
+    citations.push({
+      url,
+      title: suppliedTitle && suppliedTitle !== "Approved source"
+        ? suppliedTitle
+        : (sourceLabelForUrl(url) || "Approved source"),
+    });
+    seen.add(url);
+  }
+  return citations;
 }
 
 async function publicSourceResponse(store, url) {
@@ -119,6 +155,7 @@ async function publicSourceResponse(store, url) {
   const categoryKey = String(url.searchParams.get("category") || "").trim();
   const snapshot = await store.snapshot();
   const activeSources = activeSourcesFromSnapshot(snapshot);
+  const automatedCheckSources = automatedCheckSourcesFromSnapshot(snapshot);
   const sources = activeSources.filter((source) => {
     if (categoryKey && source.categoryKey !== categoryKey) return false;
     if (!query) return true;
@@ -129,6 +166,8 @@ async function publicSourceResponse(store, url) {
     version: snapshot.version,
     updatedAt: snapshot.updatedAt,
     sourceCount: activeSources.length,
+    automatedCheckSourceCount: automatedCheckSources.length,
+    automatedCheckDomainCount: domainsFromSources(automatedCheckSources).length,
     categories,
     categoryCounts: categories,
     sources,
@@ -293,12 +332,15 @@ export function createApp(options = {}) {
       if (pathname === "/api/health" && request.method === "GET") {
         const snapshot = await sourceStore.snapshot();
         const activeSources = activeSourcesFromSnapshot(snapshot);
+        const automatedCheckSources = automatedCheckSourcesFromSnapshot(snapshot);
         return sendJson(response, 200, {
           ok: true,
           database: "postgresql",
           apiConfigured: Boolean(config.apiKey),
           activeSources: activeSources.length,
           activeDomains: domainsFromSources(activeSources).length,
+          automatedCheckSources: automatedCheckSources.length,
+          automatedCheckDomains: domainsFromSources(automatedCheckSources).length,
           model: config.model,
         });
       }
@@ -379,6 +421,7 @@ export function createApp(options = {}) {
 
         const snapshot = await sourceStore.snapshot();
         const activeSources = activeSourcesFromSnapshot(snapshot);
+        const automatedCheckSources = automatedCheckSourcesFromSnapshot(snapshot);
         const categories = categorySummary(activeSources);
         const selection = await claimCategoryClassifier({
           apiKey: config.apiKey,
@@ -387,9 +430,28 @@ export function createApp(options = {}) {
           imageDataUrl,
           categories,
         });
-        const selected = selectSourcesForCategories(activeSources, selection.categoryKeys);
+        const selected = selectSourcesForCategories(automatedCheckSources, selection.categoryKeys);
         const domains = selected.domains;
-        if (!domains.length) throw new Error("There are no active trusted sources in the categories selected for this claim.");
+        const categorySelection = {
+          categoryKeys: selection.categoryKeys,
+          categories: selection.categoryKeys.map((key) => categoryForKey(key)).filter(Boolean),
+          reason: selection.reason,
+          selectedSourceCount: selected.sources.length,
+          selectedDomainCount: domains.length,
+          matchingSourceCount: selected.matchingSourceCount,
+          truncated: selected.truncated,
+        };
+        if (!domains.length) {
+          return sendJson(response, 200, {
+            verdict: "INSUFFICIENT",
+            explanation: "No source with a completed source-use review is available for the selected category yet. This does not assess the claim.",
+            sources: [],
+            checkedAt: new Date().toISOString(),
+            model: config.model,
+            registryVersion: snapshot.version,
+            categorySelection,
+          });
+        }
         const isApprovedUrl = (candidate) => {
           try {
             const checkedUrl = new URL(candidate);
@@ -409,36 +471,27 @@ export function createApp(options = {}) {
           domains,
           sources: selected.sources,
           isApprovedUrl,
-          sourceLabelForUrl: (candidate) => {
-            try {
-              const checkedUrl = new URL(candidate);
-              if (checkedUrl.protocol !== "https:") return "";
-              const domain = sourceDomain(checkedUrl);
-              const match = selected.sources.find((source) => domain === source.domain || domain.endsWith("." + source.domain));
-              return match?.name || "";
-            } catch {
-              return "";
-            }
-          },
+          sourceLabelForUrl: (candidate) => sourceLabelForSelectedUrl(candidate, selected.sources),
         });
         return sendJson(response, 200, {
-          ...result,
+          verdict: result.verdict,
+          explanation: result.explanation,
+          sources: publicCitations(
+            result.sources,
+            isApprovedUrl,
+            (candidate) => sourceLabelForSelectedUrl(candidate, selected.sources),
+          ),
+          checkedAt: result.checkedAt,
+          model: result.model || config.model,
           registryVersion: snapshot.version,
-          categorySelection: {
-            categoryKeys: selection.categoryKeys,
-            categories: selection.categoryKeys.map((key) => categoryForKey(key)).filter(Boolean),
-            reason: selection.reason,
-            selectedSourceCount: selected.sources.length,
-            selectedDomainCount: domains.length,
-            matchingSourceCount: selected.matchingSourceCount,
-            truncated: selected.truncated,
-          },
+          categorySelection,
         });
       }
 
       if (pathname === "/api/admin/status" && request.method === "GET") {
         const snapshot = await sourceStore.snapshot();
         const activeSources = activeSourcesFromSnapshot(snapshot);
+        const automatedCheckSources = automatedCheckSourcesFromSnapshot(snapshot);
         return sendJson(response, 200, {
           authenticated: await adminAuth.isAuthenticated(request),
           configured: adminAuth.configured(),
@@ -446,6 +499,8 @@ export function createApp(options = {}) {
           usernameRequired: adminAuth.usernameRequired(),
           sourceCount: snapshot.sources.length,
           activeDomains: domainsFromSources(activeSources).length,
+          automatedCheckSources: automatedCheckSources.length,
+          automatedCheckDomains: domainsFromSources(automatedCheckSources).length,
           version: snapshot.version,
         });
       }

@@ -337,6 +337,7 @@ textarea:focus, input:focus, select:focus { border-color: rgba(198,250,112,.58);
 .source-card-links { display: grid; gap: 7px; }
 .source-link { color: var(--lime); font-size: .78rem; font-weight: 700; overflow-wrap: anywhere; }
 .source-terms-link { color: var(--cyan); font-size: .72rem; font-weight: 700; overflow-wrap: anywhere; }
+.source-terms-pending { color: var(--faint); font-size: .72rem; font-weight: 700; line-height: 1.35; }
 .empty-state { padding: 36px; text-align: center; color: var(--muted); }
 
 .method-grid, .about-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; align-items: start; }

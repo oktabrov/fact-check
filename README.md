@@ -6,7 +6,7 @@ Fact-Check is an evidence-led Media and Information Literacy platform. It helps 
 
 Fact-Check is independently built by Umrbek Oktyabrov for the UNICEF Youth Hackathon 2026. It is not affiliated with or endorsed by UNICEF.
 
-`Registry v4` means the fourth recorded state of the public source boundary. It is an audit/version identifier for reproducibility, not an accuracy score, model version, or count of sources.
+`Registry v5` means the fifth recorded state of the public source boundary. It is an audit/version identifier for reproducibility, not an accuracy score, model version, or count of sources.
 
 ## How verification works
 
@@ -14,14 +14,14 @@ Fact-Check protects verification with an account gate, then separates routing fr
 
 1. **Account gate** — A signed-in member or administrator is required before `/api/check` accepts a request. The server rejects unauthenticated requests before parsing their body or calling AI.
 2. **Category routing** — A first OpenAI request receives the claim and the fixed source taxonomy. It selects the smallest relevant set of source categories. This request has no web-search tool and cannot return a verdict.
-3. **Restricted evidence search** — A separate OpenAI request receives only the domains and source links in those selected categories. Its web search is restricted by an allowed-domain boundary, then all returned citations are validated server-side.
-4. **Short, inspectable result** — The platform displays a concise evidence outcome, categories used, source count, direct citations, and check time.
+3. **Restricted evidence search** — A separate OpenAI request receives only domains with a completed source-use review in the selected categories. Its web search is restricted by an allowed-domain boundary, then all returned citations are validated server-side.
+4. **Short, inspectable result** — The platform displays a concise original-language paraphrase, categories used, source count, direct citation links and titles, and check time. It does not expose search-provider excerpts.
 
 For example, a question about whether cash can be used in Uzbekistan is routed to **Economy and finance** and **Government and law** before it can search evidence. It does not search unrelated weather, health, social-media, or open-web sources.
 
 ## Trusted-source governance
 
-The public registry currently seeds **235 first-party sources** across ten categories. The original registry is retained as an evidence boundary and is undergoing a staged source-use review; **21 newly added sources** include a documented official terms or licence link:
+The public registry seeds **235 first-party entries** across ten categories. As of the v5 audit, **20 entries** have a completed source-use review with a documented official terms or licence link. The other **215 entries** remain publicly visible for transparency but are **not eligible for automatic evidence search** until their source-use review is completed.
 
 - International institutions
 - Government and law
@@ -34,7 +34,7 @@ The public registry currently seeds **235 first-party sources** across ten categ
 - Fact-checking and verification
 - Public-interest journalism
 
-The initial expansion prioritizes first-party official sources, including Uzbekistan's Government Portal, Lex.uz, Central Bank, Statistics Agency, and Central Election Commission alongside international public authorities.
+The registry includes first-party official sources, including Uzbekistan's Government Portal, Lex.uz, Central Bank, Statistics Agency, and Central Election Commission alongside international public authorities. Being listed does not itself make a source eligible for automatic search.
 
 New administrator submissions are handled as a source-admission workflow:
 
@@ -47,9 +47,11 @@ New administrator submissions are handled as a source-admission workflow:
 
 ### Source use and licensing
 
-Fact-Check is an evidence-navigation platform, not a content mirror. It links to and cites the original sources; it does **not** copy their articles, images, logos, marks, videos, or database dumps into the platform. A “published reuse terms” status only describes source-owned material covered by the linked official licence. It never overrides exclusions for trademarks, logos, photos, personal data, third-party rights, or individual dataset terms.
+Fact-Check is an evidence-navigation platform, not a content mirror. It links to and cites the original sources; it does **not** copy their articles, images, logos, marks, videos, database dumps, or search-provider excerpts into the platform. A “published reuse terms” status only describes source-owned material covered by the linked official licence. It never overrides exclusions for trademarks, logos, photos, personal data, third-party rights, or individual dataset terms.
 
-Every new source must have an official policy or licence URL before it can be admitted. The public directory and its downloadable PDF show that URL when the review is complete. This is a documented usage review, not legal advice or a claim that all material on a source domain has the same permissions.
+Every new source must have an official policy or licence URL before it can be admitted. The public directory and its downloadable PDF show that URL when the review is complete. This is a documented, conservative source-use review — not legal advice, permission to copy a whole domain, or a claim that every page has the same permissions.
+
+Content-reuse terms and permission for automated access are separate questions. Before enabling any source for automatic evidence search, confirm its current terms, robots/access rules where relevant, licence scope, and the law that applies to the deployment. If those terms are unclear or prohibit the use, keep the source review pending and do not use it automatically.
 
 Social platforms such as Telegram, Facebook, Instagram, X, TikTok, and YouTube are intentionally excluded from the automated registry. An allowed-domain filter for a platform would authorize every account on that platform, not only an official channel.
 
@@ -96,6 +98,29 @@ Stop the local database with `docker compose stop postgres`. Its data is retaine
 - npm run db:migrate applies versioned PostgreSQL migrations.
 - npm run db:seed adds missing reviewed seed sources without overwriting existing administrator-managed records.
 - npm run db:setup runs migrations and the source seed in sequence.
+
+## Deploy to Railway
+
+This repository includes `railway.toml`. Railway will use Railpack, run `npm run db:setup` before the app starts, run `npm start`, and wait for `/api/health` to return success.
+
+1. In Railway, create a project and choose **Deploy from GitHub repo**, then select `oktabrov/fact-check`.
+2. Add a **PostgreSQL** service. In the app service's Variables tab, set `DATABASE_URL=${{Postgres.DATABASE_URL}}`. If your database service has a different name, replace `Postgres` with that exact service name.
+3. Add these app variables in Railway (do not commit them):
+
+   ```text
+   NODE_ENV=production
+   DATABASE_SSL=true
+   DATABASE_SSL_REJECT_UNAUTHORIZED=false
+   OPENAI_API_KEY=your_openai_api_key
+   ADMIN_EMAIL=your-admin-email
+   ADMIN_PASSWORD=a-long-unique-password
+   ```
+
+   `DATABASE_SSL_REJECT_UNAUTHORIZED=false` is scoped to Railway's private PostgreSQL service, which uses a self-signed certificate. Do not copy that setting to an external or public database; use a trusted certificate there.
+4. Deploy, then open the app service's **Settings → Networking** and generate a public domain.
+5. Confirm `https://your-domain/api/health` returns JSON with `"ok": true` before sharing the site.
+
+Set optional `OPENAI_MODEL`, `DONATION_PROVIDER`, and `DONATION_URL` as Railway variables if you use them. Railway supplies `PORT`; do not set it manually.
 
 ## Deployment essentials
 

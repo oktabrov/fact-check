@@ -1,0 +1,10 @@
+[build]
+builder = "railpack"
+
+[deploy]
+preDeployCommand = ["npm run db:setup"]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 180
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10

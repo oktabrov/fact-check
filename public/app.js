@@ -444,10 +444,16 @@ function normaliseSourceData(payload) {
       count,
     };
   }).sort((left, right) => left.label.localeCompare(right.label));
+  const automatedCheckSources = sources.filter((source) => (
+    ["reviewed-link-and-citation", "reviewed-open-license"].includes(source.usageStatus)
+    && source.usagePolicyUrl
+  ));
 
   return {
     ...payload,
     sourceCount: Number(payload?.sourceCount) || sources.length,
+    automatedCheckSourceCount: Number(payload?.automatedCheckSourceCount) || automatedCheckSources.length,
+    automatedCheckDomainCount: Number(payload?.automatedCheckDomainCount) || new Set(automatedCheckSources.map((source) => source.domain)).size,
     sources,
     categories,
   };
@@ -483,7 +489,7 @@ async function hydrateRegistryOverview() {
   try {
     const data = await loadSourceData();
     const counts = registryCounts(data);
-    summary.textContent = data.sourceCount + " active sources across " + counts.length + " source groups";
+    summary.textContent = data.sourceCount + " public registry entries · " + data.automatedCheckSourceCount + " eligible for automatic checks";
     version.textContent = "Registry v" + data.version;
     sourceLink.innerHTML = "View all " + data.sourceCount + " sources <span aria-hidden=\"true\">→</span>";
     grid.innerHTML = counts.map(homeRegistryCard).join("");
@@ -494,7 +500,9 @@ async function hydrateRegistryOverview() {
 }
 
 function sourceUsageMarkup(source) {
-  if (!source.usagePolicyUrl || source.usageStatus === "legacy-review-pending") return "";
+  if (!source.usagePolicyUrl || source.usageStatus === "legacy-review-pending") {
+    return `<span class="source-terms-pending">Use review pending · not used for automatic checks</span>`;
+  }
   const label = source.usageStatus === "reviewed-open-license"
     ? "Published reuse terms"
     : "Published source terms";
@@ -506,9 +514,9 @@ function sourceCard(source) {
 }
 
 function renderSources() {
-  app.innerHTML = `${pageHead("Source Library", "A visible evidence boundary. <em>Organized by purpose.</em>", "Browse the exact sources Fact-Check can use. Each source is assigned to a fixed category so the checker can select a focused, relevant boundary for every claim.")}
+  app.innerHTML = `${pageHead("Source Library", "A visible evidence boundary. <em>Organized by purpose.</em>", "Browse the public source registry. Only entries with a completed source-use review are eligible for automatic evidence search; pending entries remain visible for transparency.")}
     <section class="page">
-      <div class="source-library-policy glass-card reveal"><span class="mini-label">Admission standard</span><p>Automated checks use first-party official domains. Fact-Check links to original material; it does not republish source text, images, logos, or database copies. Reviewed entries include their official terms or licence page. The registry version is a change record, not a trust score.</p></div>
+      <div class="source-library-policy glass-card reveal"><span class="mini-label">Source-use safeguard</span><p>Automatic checks use only first-party domains with a completed source-use review and an official terms or licence link. Fact-Check links to original material and returns short original-language summaries; it does not republish source text, images, logos, or database copies. A completed review is not a blanket licence for every item on a domain.</p></div>
       <div class="directory-tools reveal"><input id="source-search" type="search" placeholder="Search a source, category, or authority" aria-label="Search trusted sources" /><select id="source-category" aria-label="Filter sources by category"><option value="">All categories</option></select><a class="btn btn-secondary" href="/api/sources.pdf">↓ Download PDF list</a></div>
       <div class="source-summary reveal"><span id="source-summary">Loading trusted sources…</span><span class="mini-label" id="source-version">Registry version —</span></div>
       <div id="source-category-chips" class="source-category-chips" aria-label="Source category filters"></div>
@@ -540,8 +548,7 @@ async function bindSources() {
         const text = `${source.name} ${source.domain} ${source.category} ${source.categoryKey} ${source.rationale}`.toLowerCase();
         return matchesCategory && (!term || text.includes(term));
       });
-      const termsReviewed = data.sources.filter((source) => source.usageStatus !== "legacy-review-pending" && source.usagePolicyUrl).length;
-      summary.textContent = `${items.length} of ${data.sourceCount} active trusted sources · ${termsReviewed} with published use terms · Updated ${formatDate(data.updatedAt, { short: true })}`;
+      summary.textContent = `${items.length} of ${data.sourceCount} public entries · ${data.automatedCheckSourceCount} eligible for automatic checks after completed source-use review · Updated ${formatDate(data.updatedAt, { short: true })}`;
       grid.innerHTML = items.length ? items.map(sourceCard).join("") : `<div class="empty-state glass-card">No selected source matches that search.</div>`;
       chips.querySelectorAll("[data-category-key]").forEach((chip) => {
         const active = chip.dataset.categoryKey === categoryValue;
@@ -580,7 +587,7 @@ function renderAbout() {
 function renderMethodV2() {
   app.innerHTML = `${pageHead("The Process", "Two AI steps. <em>One enforced boundary.</em>", "Fact-Check separates source routing from evidence searching so the system cannot answer first and justify itself later.")}
     <section class="page method-grid">
-      <div><article class="method-card glass-card reveal"><span class="eyebrow">Step 01 · Category routing</span><h2>Decide where to look before looking.</h2><p>The first request receives the claim and the fixed registry taxonomy. It selects the smallest relevant set of categories — for example, weather and emergencies plus government and law for a report of a hurricane in the United States.</p><p>That routing request has no web-search tool and is not allowed to produce a fact-check verdict.</p></article><article class="method-card glass-card reveal"><span class="eyebrow">Step 02 · Evidence search</span><h2>Search only the selected domain set.</h2><p>A new request receives the selected source catalogue and a server-enforced allowed-domain filter. Returned citations are checked against the same selected domains before they are shown.</p><p>Each evidence search is capped at 100 approved domains. If the selected category set is larger, the platform reports that boundary instead of widening the search.</p></article></div>
+      <div><article class="method-card glass-card reveal"><span class="eyebrow">Step 01 · Category routing</span><h2>Decide where to look before looking.</h2><p>The first request receives the claim and the fixed registry taxonomy. It selects the smallest relevant set of categories — for example, weather and emergencies plus government and law for a report of a hurricane in the United States.</p><p>That routing request has no web-search tool and is not allowed to produce a fact-check verdict.</p></article><article class="method-card glass-card reveal"><span class="eyebrow">Step 02 · Evidence search</span><h2>Search only the reviewed domain set.</h2><p>A new request receives only sources in the selected categories that have a completed source-use review, plus a server-enforced allowed-domain filter. Returned citations are checked against the same selected domains before they are shown.</p><p>The result keeps links and titles only, with a short paraphrased explanation rather than search-provider excerpts. Each evidence search is capped at 100 approved domains. If no reviewed source is available for a category, the result is marked insufficient instead of widening the search.</p></article></div>
       <aside class="quote-card glass-card reveal"><blockquote>“A fast answer is not enough. A trustworthy answer shows where it came from and where its limits are.”</blockquote><cite>Fact-Check evidence standard</cite></aside>
     </section>
     <section class="section section-tint"><div class="page"><div class="section-head reveal"><span class="eyebrow">Built-in safeguards</span><h2>Designed to be inspectable at every step.</h2></div><div class="principles glass-card reveal"><article class="principle"><span>01 / CATEGORY CONTROL</span><h3>Categories are fixed, not invented on the fly.</h3><p>The model can select only categories defined by the platform. It cannot create a vague “general web” category to escape the source boundary.</p></article><article class="principle"><span>02 / DOMAIN CONTROL</span><h3>The second request receives only selected trusted domains.</h3><p>The boundary is applied at the API request level, then citations are validated again on the server before the result is displayed.</p></article><article class="principle"><span>03 / SOURCE ADMISSION</span><h3>New sources require AI analysis and manual confirmation.</h3><p>Administrators submit a first-party HTTPS domain. A high-confidence source assessment and human confirmation are required before it can become active.</p></article><article class="principle"><span>04 / CLEAR LIMITS</span><h3>Uncertainty remains a valid result.</h3><p>If selected sources do not provide enough evidence, Fact-Check says so. It does not treat an empty search as proof that a claim is false.</p></article></div></div></section>
@@ -668,6 +675,25 @@ function adminDashboardMarkupV2(status, snapshot) {
 }
 
 function bindAdminDashboardV2(status, snapshot) {
+  const sidebarIntro = document.querySelector(".admin-sidebar p");
+  if (sidebarIntro) {
+    sidebarIntro.textContent = "Only active sources with a completed source-use review are eligible for automatic evidence search.";
+  }
+  const activeOption = document.querySelector("#source-active option[value='true']");
+  if (activeOption) activeOption.textContent = "Active — public listing; automatic checks require completed review";
+  const usageConfirmation = document.querySelector("#source-usage-review")?.closest("label")?.querySelector("span");
+  if (usageConfirmation) {
+    usageConfirmation.textContent = "I reviewed the official terms or licence above for the intended automated evidence-search and link/citation use. Fact-Check will not copy excluded content, logos, or branding.";
+  }
+  const automaticCheckSources = Number(status.automatedCheckSources) || 0;
+  const automaticCheckDomains = Number(status.automatedCheckDomains) || 0;
+  const metrics = document.querySelector(".admin-sidebar");
+  if (metrics) {
+    const reviewMetric = document.createElement("div");
+    reviewMetric.className = "admin-metric";
+    reviewMetric.innerHTML = `<b>${escapeHtml(automaticCheckSources)}</b><span>reviewed sources · ${escapeHtml(automaticCheckDomains)} domains</span>`;
+    metrics.insertBefore(reviewMetric, metrics.querySelector("a"));
+  }
   const form = document.querySelector("#source-form");
   const sourceMap = new Map(snapshot.sources.map((source) => [source.id, source]));
   const analysisButton = document.querySelector("#assess-source");

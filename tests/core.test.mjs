@@ -24,7 +24,15 @@ test("PostgreSQL source registry preserves the trusted-domain boundary", async (
   const pool = await testDatabase();
   try {
     const store = createSourceStore(pool);
-    await store.add({ name: "WHO", url: "https://www.who.int/", category: "Authority", rationale: "Global health authority." });
+    await store.add({
+      name: "WHO",
+      url: "https://www.who.int/",
+      category: "Authority",
+      rationale: "Global health authority.",
+      usageStatus: "reviewed-link-and-citation",
+      usagePolicyUrl: "https://www.who.int/about/policies",
+      usageReviewNote: "Official terms were reviewed for direct linking and citation.",
+    });
     assert.deepEqual(await store.activeDomains(), ["who.int"]);
     assert.equal(await store.isApprovedUrl("https://news.who.int/updates"), true);
     assert.equal(await store.isApprovedUrl("http://who.int/updates"), false);
@@ -32,6 +40,7 @@ test("PostgreSQL source registry preserves the trusted-domain boundary", async (
     assert.equal(await store.isApprovedUrl("https://who.int.evil.example"), false);
     const added = await store.add({ name: "CDC", url: "https://www.cdc.gov/", category: "Authority", rationale: "Public health authority." });
     assert.equal(added.source.active, true);
+    assert.equal(await store.isApprovedUrl("https://www.cdc.gov/updates"), false);
     assert.equal((await store.publicSources()).length, 2);
     await assert.rejects(
       () => store.add({ name: "Duplicate WHO", url: "https://www.who.int/", category: "Authority", rationale: "Duplicate source." }),
@@ -55,6 +64,7 @@ test("PostgreSQL migration seeds the categorized 235-source public registry once
     assert.equal(firstSeed.seeded, 235);
     assert.equal(secondSeed.skipped, true);
     assert.equal(snapshot.sources.length, 235);
+    assert.equal(snapshot.version, 5);
     assert.equal((await createSourceStore(pool).activeDomains()).length, 235);
     assert.equal(snapshot.sources.find((source) => source.id === "src-106").categoryKey, "economy-and-finance");
     assert.ok(snapshot.sources.some((source) => source.categoryKey === "weather-and-emergencies"));
@@ -66,6 +76,12 @@ test("PostgreSQL migration seeds the categorized 235-source public registry once
         usagePolicyUrl: "https://data.gov/privacy-policy/",
       },
     );
+    const automatedCheckSources = snapshot.sources.filter((source) => (
+      ["reviewed-link-and-citation", "reviewed-open-license"].includes(source.usageStatus)
+      && source.usagePolicyUrl
+    ));
+    assert.equal(automatedCheckSources.length, 20);
+    assert.equal(snapshot.sources.find((source) => source.id === "src-220")?.usageStatus, "legacy-review-pending");
   } finally {
     await pool.end();
   }
@@ -191,7 +207,16 @@ test("public user sessions cannot access administrator routes", async () => {
     const sourceResponse = await fetch(baseUrl + "/api/sources");
     const sourceData = await sourceResponse.json();
     assert.equal(sourceData.sourceCount, 235);
+    assert.equal(sourceData.automatedCheckSourceCount, 20);
+    assert.equal(sourceData.automatedCheckDomainCount, 20);
     assert.equal(sourceData.categoryCounts.length, 10);
+
+    const healthResponse = await fetch(baseUrl + "/api/health");
+    assert.equal(healthResponse.status, 200);
+    assert.deepEqual(
+      (await healthResponse.json()).automatedCheckSources,
+      20,
+    );
 
     const donation = await fetch(baseUrl + "/api/donation");
     assert.equal(donation.status, 200);
@@ -327,13 +352,16 @@ test("claim checks classify categories before a separate restricted evidence req
     checkClaimWithOpenAI: async (arguments_) => {
       events.push("check");
       evidenceArguments = arguments_;
-      assert.equal(arguments_.isApprovedUrl("https://cbu.uz/en/"), true);
-      assert.equal(arguments_.isApprovedUrl("http://cbu.uz/en/"), false);
-      assert.equal(arguments_.isApprovedUrl("ftp://cbu.uz/en/"), false);
+      assert.equal(arguments_.isApprovedUrl("https://data.gov/dataset/example"), true);
+      assert.equal(arguments_.isApprovedUrl("https://cbu.uz/en/"), false);
+      assert.equal(arguments_.isApprovedUrl("http://data.gov/dataset/example"), false);
       return {
         verdict: "SUPPORTED",
         explanation: "Selected official sources confirm the relevant rule.",
-        sources: [{ url: "https://cbu.uz/en/", title: "Central Bank of Uzbekistan" }],
+        sources: [
+          { url: "https://data.gov/dataset/example", title: "Data.gov", excerpt: "This must not leave the server." },
+          { url: "https://cbu.uz/en/", title: "Central Bank of Uzbekistan", excerpt: "This unreviewed source must not leave the server." },
+        ],
         checkedAt: "2026-07-27T00:00:00.000Z",
         model: "test-model",
       };
@@ -352,9 +380,63 @@ test("claim checks classify categories before a separate restricted evidence req
     const body = await response.json();
     assert.deepEqual(events, ["classify", "check"]);
     assert.deepEqual(body.categorySelection.categoryKeys, ["economy-and-finance", "government-and-law"]);
-    assert.ok(evidenceArguments.domains.includes("cbu.uz"));
+    assert.ok(evidenceArguments.domains.includes("data.gov"));
+    assert.equal(evidenceArguments.domains.includes("cbu.uz"), false);
     assert.ok(evidenceArguments.sources.every((source) => ["economy-and-finance", "government-and-law"].includes(source.categoryKey)));
+    assert.ok(evidenceArguments.sources.every((source) => source.usageStatus !== "legacy-review-pending" && source.usagePolicyUrl));
     assert.equal(body.explanation, "Selected official sources confirm the relevant rule.");
+    assert.deepEqual(body.sources, [{ url: "https://data.gov/dataset/example", title: "Data.gov" }]);
+  } finally {
+    await new Promise((resolve) => app.close(resolve));
+    await pool.end();
+  }
+});
+
+test("claim checks stop with insufficient evidence when a selected category has no completed source-use review", async () => {
+  const pool = await testDatabase({ seed: true });
+  const events = [];
+  const userAuth = createUserAuth({ pool });
+  const signedIn = await userAuth.signup({
+    name: "Amina Karimova",
+    email: "amina@example.com",
+    password: "a-long-user-test-password",
+  });
+  const app = createApp({
+    pool,
+    userAuth,
+    config: {
+      apiKey: "test-key",
+      adminEmail: TEST_ADMIN_EMAIL,
+      adminPassword: TEST_ADMIN_PASSWORD,
+      model: "test-model",
+      nodeEnv: "test",
+      port: 0,
+    },
+    classifyClaimCategories: async () => {
+      events.push("classify");
+      return { categoryKeys: ["weather-and-emergencies"], reason: "The claim concerns an emergency event." };
+    },
+    checkClaimWithOpenAI: async () => {
+      events.push("check");
+      throw new Error("Evidence search must not run without a completed source-use review.");
+    },
+  });
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
+  const port = app.address().port;
+  try {
+    const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: "fact_check_user=" + signedIn.token },
+      body: JSON.stringify({ claim: "Will the storm reach the capital tomorrow?" }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(events, ["classify"]);
+    assert.equal(body.verdict, "INSUFFICIENT");
+    assert.match(body.explanation, /completed source-use review/i);
+    assert.equal(body.categorySelection.selectedSourceCount, 0);
+    assert.equal(body.categorySelection.selectedDomainCount, 0);
+    assert.deepEqual(body.sources, []);
   } finally {
     await new Promise((resolve) => app.close(resolve));
     await pool.end();
