@@ -27,6 +27,8 @@ const REVIEWED_USAGE_STATUSES = new Set([
   "reviewed-link-and-citation",
   "reviewed-open-license",
 ]);
+const EVIDENCE_VERDICTS = new Set(["SUPPORTED", "CONTRADICTED", "MISLEADING", "MIXED", "INSUFFICIENT"]);
+const INSUFFICIENT_EVIDENCE_ANSWER = "There is not enough reliable information in the selected sources to verify this claim.";
 
 function publicDonationConfig(config) {
   const provider = String(config.donationProvider || "Secure payment provider").trim().slice(0, 80) || "Secure payment provider";
@@ -63,7 +65,7 @@ function sendFile(response, filePath, method) {
   const data = fs.readFileSync(filePath);
   response.writeHead(200, {
     "Content-Type": MIME_TYPES[extension] || "application/octet-stream",
-    "Cache-Control": extension === ".html" ? "no-cache" : "public, max-age=3600",
+    "Cache-Control": [".html", ".js", ".css"].includes(extension) ? "no-cache" : "public, max-age=3600",
   });
   if (method !== "HEAD") response.end(data);
   else response.end();
@@ -150,6 +152,30 @@ function publicCitations(sources, isApprovedUrl, sourceLabelForUrl) {
   return citations;
 }
 
+function evidenceVerdict(value) {
+  const verdict = String(value || "").trim().toUpperCase();
+  return EVIDENCE_VERDICTS.has(verdict) ? verdict : "INSUFFICIENT";
+}
+
+function publicEvidenceResult(result, isApprovedUrl, sourceLabelForUrl) {
+  const verdict = evidenceVerdict(result?.verdict);
+  const citations = publicCitations(result?.sources, isApprovedUrl, sourceLabelForUrl);
+  const answer = String(result?.answer || result?.explanation || "").replace(/\s+/g, " ").trim().slice(0, 520);
+
+  // A verdict without a validated citation is not a completed fact check. The
+  // same is true when the evidence search itself reports insufficient evidence.
+  // In both cases, return a clear uncertainty message and no source list.
+  if (verdict === "INSUFFICIENT" || !citations.length || !answer) {
+    return {
+      verdict: "INSUFFICIENT",
+      answer: INSUFFICIENT_EVIDENCE_ANSWER,
+      sources: [],
+    };
+  }
+
+  return { verdict, answer, sources: citations };
+}
+
 async function publicSourceResponse(store, url) {
   const query = String(url.searchParams.get("q") || "").trim().toLowerCase();
   const categoryKey = String(url.searchParams.get("category") || "").trim();
@@ -157,9 +183,9 @@ async function publicSourceResponse(store, url) {
   const activeSources = activeSourcesFromSnapshot(snapshot);
   const automatedCheckSources = automatedCheckSourcesFromSnapshot(snapshot);
   const sources = activeSources.filter((source) => {
-    if (categoryKey && source.categoryKey !== categoryKey) return false;
+    if (categoryKey && !source.categoryKeys.includes(categoryKey)) return false;
     if (!query) return true;
-    return [source.name, source.domain, source.category, source.categoryKey, source.rationale].join(" ").toLowerCase().includes(query);
+    return [source.name, source.domain, source.category, source.categoryKey, ...(source.categoryKeys || []), ...(source.categoryLabels || []), source.rationale].join(" ").toLowerCase().includes(query);
   });
   const categories = categorySummary(activeSources);
   return {
@@ -447,9 +473,11 @@ export function createApp(options = {}) {
           truncated: selected.truncated,
         };
         if (!domains.length) {
+          const answer = "There is not enough eligible source information in the selected category to verify this claim.";
           return sendJson(response, 200, {
             verdict: "INSUFFICIENT",
-            explanation: "No source with a completed source-use review is available for the selected category yet. This does not assess the claim.",
+            answer,
+            explanation: answer,
             sources: [],
             checkedAt: new Date().toISOString(),
             model: config.model,
@@ -478,14 +506,16 @@ export function createApp(options = {}) {
           isApprovedUrl,
           sourceLabelForUrl: (candidate) => sourceLabelForSelectedUrl(candidate, selected.sources),
         });
+        const publicResult = publicEvidenceResult(
+          result,
+          isApprovedUrl,
+          (candidate) => sourceLabelForSelectedUrl(candidate, selected.sources),
+        );
         return sendJson(response, 200, {
-          verdict: result.verdict,
-          explanation: result.explanation,
-          sources: publicCitations(
-            result.sources,
-            isApprovedUrl,
-            (candidate) => sourceLabelForSelectedUrl(candidate, selected.sources),
-          ),
+          verdict: publicResult.verdict,
+          answer: publicResult.answer,
+          explanation: publicResult.answer,
+          sources: publicResult.sources,
           checkedAt: result.checkedAt,
           model: result.model || config.model,
           registryVersion: snapshot.version,

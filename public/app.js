@@ -22,6 +22,10 @@ const LEGACY_CATEGORY_METADATA = {
   "science-and-environment": { label: "Science and environment", description: "Public science agencies and environmental authorities." },
   "elections-and-civic-information": { label: "Elections and civic information", description: "Election commissions and official civic-information bodies." },
   "cyber-and-digital-safety": { label: "Cyber and digital safety", description: "National cyber agencies and public digital-safety guidance." },
+  "companies-and-products": { label: "Companies and products", description: "Official company newsrooms, product announcements, and service notices." },
+  "games-and-interactive-entertainment": { label: "Games and interactive entertainment", description: "Official game publishers, platforms, ratings bodies, and award programmes." },
+  "sports-and-entertainment": { label: "Sports and entertainment", description: "Official sports bodies, studios, film and music organisations, and award programmes." },
+  "news-and-current-affairs": { label: "News and current affairs", description: "Established newsrooms and public-interest reporting for time-sensitive claims." },
   "fact-checking-and-verification": { label: "Fact-checking and verification", description: "Established verification organisations with transparent methods." },
   "public-interest-journalism": { label: "Public-interest journalism", description: "Selected public-service and international newsrooms." },
 };
@@ -275,7 +279,7 @@ function renderHome() {
 
     <section class="section section-tint"><div class="page">
       <div class="stat-grid reveal">
-        <article class="stat-card"><strong data-source-count>235</strong><span>listed sources to inspect</span></article>
+        <article class="stat-card"><strong data-source-count>305</strong><span>listed sources to inspect</span></article>
         <article class="stat-card"><strong>0</strong><span>unlisted domains used in checks</span></article>
         <article class="stat-card"><strong>5</strong><span>careful evidence outcomes</span></article>
       </div>
@@ -325,26 +329,32 @@ function renderCheck() {
         <button class="btn btn-primary" id="check-submit" type="submit">Verify with trusted sources <span aria-hidden="true">→</span></button>
         <div class="example-row" aria-label="Example claims"><button class="example-btn" type="button" data-example="Did a hurricane make landfall in the United States yesterday?">Hurricane report</button><button class="example-btn" type="button" data-example="Has an official election result been announced for this area?">Election update</button><button class="example-btn" type="button" data-example="Is this health claim supported by official public-health sources?">Health claim</button></div>
       </form>
-      <aside class="checker-side reveal"><article class="side-note glass-card"><span class="mini-label">01 · Route</span><h3>Choose the relevant evidence boundary.</h3><p>The first AI request only selects categories. It does not search the web or answer the claim.</p></article><article class="side-note glass-card"><span class="mini-label">02 · Check</span><h3>Search the chosen trusted domains.</h3><p>A new request checks only the sources in those categories, and only validated citations can appear in the result.</p></article><article class="side-note glass-card"><h3>What you receive</h3><ul><li>A concise evidence outcome.</li><li>Direct links to the sources used.</li><li>The source categories selected for your claim.</li></ul></article></aside>
+      <aside class="checker-side reveal"><article class="side-note glass-card"><span class="mini-label">01 · Route</span><h3>Choose the relevant evidence boundary.</h3><p>At first, selects relevant categories for your request.</p></article><article class="side-note glass-card"><span class="mini-label">02 · Check</span><h3>Search the chosen trusted domains.</h3><p>A new request checks only the sources in those categories, and only validated citations can appear in the result.</p></article><article class="side-note glass-card"><h3>What you receive</h3><ul><li>A concise evidence outcome.</li><li>Direct links to the sources used.</li><li>The source categories selected for your claim.</li></ul></article></aside>
     </section>
     <section class="page result-wrap" id="check-result" aria-live="polite"></section>`;
   bindChecker();
 }
 
 function verdictLabel(verdict) {
-  return ({ SUPPORTED: "Supported by selected sources", CONTRADICTED: "Contradicted by selected sources", MISLEADING: "Context missing or misleading framing", MIXED: "Mixed selected-source evidence", INSUFFICIENT: "Not enough evidence in selected sources" }[verdict] || "Not enough evidence in selected sources");
+  return ({ SUPPORTED: "Evidence supports the claim", CONTRADICTED: "Evidence contradicts the claim", MISLEADING: "Evidence indicates misleading framing", MIXED: "Evidence is mixed", INSUFFICIENT: "Not enough evidence to verify" }[verdict] || "Not enough evidence to verify");
+}
+
+function verdictHeading(verdict) {
+  return ({ SUPPORTED: "Answer: supported by the evidence", CONTRADICTED: "Answer: contradicted by the evidence", MISLEADING: "Answer: misleading or missing key context", MIXED: "Answer: evidence is mixed", INSUFFICIENT: "Answer: not enough evidence" }[verdict] || "Answer: not enough evidence");
 }
 
 function renderCheckResult(result) {
   const verdict = String(result.verdict || "INSUFFICIENT").toLowerCase();
   const citations = (result.sources || []).map((source) => `
     <a class="citation" href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer"><div><strong>${escapeHtml(source.title || "Selected source")}</strong><small>${escapeHtml(source.url)}</small></div><span class="citation-arrow" aria-hidden="true">↗</span></a>`).join("");
+  const answer = result.answer || result.explanation || "There is not enough reliable information in the selected sources to verify this claim.";
+  const hasEvidence = verdict !== "insufficient" && Boolean(citations);
   const selection = result.categorySelection || {};
   const categoryNames = (selection.categories || []).map((category) => category.label || category.key).filter(Boolean);
   const routing = categoryNames.length
     ? `<section class="selection-trace"><div class="selection-trace-head"><span class="mini-label">Evidence boundary</span><span>${escapeHtml(String(selection.selectedDomainCount || 0))} trusted domains</span></div><div class="selection-steps"><div><b>01</b><span><strong>Categories selected</strong><small>${escapeHtml(categoryNames.join(" · "))}</small></span></div><div><b>02</b><span><strong>Evidence search completed</strong><small>${escapeHtml(String(selection.selectedSourceCount || 0))} listed sources were eligible for this check</small></span></div></div>${selection.reason ? `<p class="selection-reason">${escapeHtml(selection.reason)}</p>` : ""}${selection.truncated ? `<p class="selection-reason">The matching set exceeded the search cap, so Fact-Check used the first 100 approved domains in the selected categories.</p>` : ""}</section>`
     : "";
-  return `<article class="result-card glass-card reveal visible"><div class="result-head"><div><span class="verdict verdict-${verdict}">${escapeHtml(verdictLabel(result.verdict))}</span><h2>What the selected sources indicate</h2></div><div class="checked-time">Checked ${escapeHtml(formatDate(result.checkedAt, { time: true }))}</div></div>${routing}<p class="result-text">${escapeHtml(result.explanation || "No explanation was returned.")}</p><h3 class="result-sources-title">Sources used for this result</h3>${citations ? `<div class="citation-list">${citations}</div>` : `<div class="info-banner">No displayable selected-source link was returned. This result is shown as incomplete evidence.</div>`}</article>`;
+  return `<article class="result-card glass-card reveal visible"><div class="result-head"><div><span class="verdict verdict-${verdict}">${escapeHtml(verdictLabel(result.verdict))}</span><h2>${escapeHtml(verdictHeading(result.verdict))}</h2></div><div class="checked-time">Checked ${escapeHtml(formatDate(result.checkedAt, { time: true }))}</div></div>${routing}<section class="final-answer"><span class="mini-label">Final answer</span><p class="result-text">${escapeHtml(answer)}</p></section>${hasEvidence ? `<h3 class="result-sources-title">Evidence used for this answer</h3><div class="citation-list">${citations}</div>` : ""}</article>`;
 }
 
 function bindChecker() {
@@ -421,6 +431,13 @@ function sourceCategoryKey(source) {
   return legacy || "government-and-law";
 }
 
+function sourceCategoryKeys(source) {
+  const primary = sourceCategoryKey(source);
+  const supplied = Array.isArray(source?.categoryKeys) ? source.categoryKeys : [];
+  const keys = [primary, ...supplied.map((key) => String(key || "").trim()).filter(Boolean)];
+  return [...new Set(keys)].filter((key) => LEGACY_CATEGORY_METADATA[key]);
+}
+
 function normaliseSourceData(payload) {
   const sourceRows = Array.isArray(payload?.sources) ? payload.sources : [];
   const suppliedCategories = Array.isArray(payload?.categories)
@@ -429,11 +446,19 @@ function normaliseSourceData(payload) {
   const categoryDetails = new Map(suppliedCategories.map((item) => [String(item.key), item]));
   const sources = sourceRows.map((source) => {
     const categoryKey = sourceCategoryKey(source);
+    const categoryKeys = sourceCategoryKeys(source);
     const fallback = LEGACY_CATEGORY_METADATA[categoryKey] || LEGACY_CATEGORY_METADATA["government-and-law"];
-    return { ...source, categoryKey, category: source.category || fallback.label };
+    const categoryLabels = categoryKeys.map((key) => (
+      categoryDetails.get(key)?.label
+      || LEGACY_CATEGORY_METADATA[key]?.label
+      || key
+    ));
+    return { ...source, categoryKey, categoryKeys, categoryLabels, category: source.category || fallback.label };
   });
   const counts = new Map();
-  for (const source of sources) counts.set(source.categoryKey, (counts.get(source.categoryKey) || 0) + 1);
+  for (const source of sources) {
+    for (const key of source.categoryKeys) counts.set(key, (counts.get(key) || 0) + 1);
+  }
   const categories = [...counts.entries()].map(([key, count]) => {
     const supplied = categoryDetails.get(key) || {};
     const fallback = LEGACY_CATEGORY_METADATA[key] || LEGACY_CATEGORY_METADATA["government-and-law"];
@@ -470,8 +495,7 @@ function registryCounts(data) {
   if (Array.isArray(data.categories) && data.categories.every((item) => item && item.key)) return data.categories;
   const counts = new Map();
   (data.sources || []).forEach((source) => {
-    const key = source.categoryKey || source.category;
-    counts.set(key, (counts.get(key) || 0) + 1);
+    sourceCategoryKeys(source).forEach((key) => counts.set(key, (counts.get(key) || 0) + 1));
   });
   return [...counts.entries()].map(([key, count]) => ({ key, label: key, description: "A reviewed part of the public Fact-Check source registry.", count }));
 }
@@ -510,7 +534,17 @@ function sourceUsageMarkup(source) {
 }
 
 function sourceCard(source) {
-  return `<article class="source-card glass-card"><span class="source-tag">${escapeHtml(source.category)}</span><h3>${escapeHtml(source.name)}</h3><p>${escapeHtml(source.rationale)}</p><div class="source-card-links"><a class="source-link" href="${escapeAttr(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.domain)} ↗</a>${sourceUsageMarkup(source)}</div></article>`;
+  const categories = (source.categoryLabels || [source.category]).map((label) => `<span class="source-tag">${escapeHtml(label)}</span>`).join("");
+  return `<article class="source-card glass-card"><a class="source-card-cover-link" href="${escapeAttr(source.url)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escapeAttr(source.name)} official source in a new tab"></a><div class="source-tags">${categories}</div><h3>${escapeHtml(source.name)}</h3><p>${escapeHtml(source.rationale)}</p><div class="source-card-links"><a class="source-link" href="${escapeAttr(source.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(source.domain)} ↗</a>${sourceUsageMarkup(source)}</div></article>`;
+}
+
+function shuffleSources(sources) {
+  const shuffled = [...sources];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
 }
 
 function renderSources() {
@@ -520,6 +554,7 @@ function renderSources() {
       <div class="directory-tools reveal"><input id="source-search" type="search" placeholder="Search a source, category, or authority" aria-label="Search trusted sources" /><select id="source-category" aria-label="Filter sources by category"><option value="">All categories</option></select><a class="btn btn-secondary" href="/api/sources.pdf">↓ Download PDF list</a></div>
       <div class="source-summary reveal"><span id="source-summary">Loading trusted sources…</span><span class="mini-label" id="source-version">Registry version —</span></div>
       <div id="source-category-chips" class="source-category-chips" aria-label="Source category filters"></div>
+      <p class="source-category-note">Sources can belong to more than one evidence category, so category totals can overlap while the public-entry total remains unique.</p>
       <div id="source-grid" class="source-grid" aria-live="polite"><div class="center-loader glass-card"><span class="spinner"></span><span>Loading the registry…</span></div></div>
     </section>`;
   bindSources();
@@ -534,6 +569,7 @@ async function bindSources() {
   const chips = document.querySelector("#source-category-chips");
   try {
     const data = await loadSourceData();
+    const randomizedSources = shuffleSources(data.sources);
     const requestedCategory = new URLSearchParams(window.location.search).get("category") || "";
     const validCategory = data.categories.some((item) => item.key === requestedCategory) ? requestedCategory : "";
     category.innerHTML = `<option value="">All categories</option>${data.categories.map((item) => `<option value="${escapeAttr(item.key)}">${escapeHtml(item.label)} (${escapeHtml(item.count)})</option>`).join("")}`;
@@ -543,9 +579,9 @@ async function bindSources() {
     const update = () => {
       const term = search.value.trim().toLowerCase();
       const categoryValue = category.value;
-      const items = data.sources.filter((source) => {
-        const matchesCategory = !categoryValue || source.categoryKey === categoryValue;
-        const text = `${source.name} ${source.domain} ${source.category} ${source.categoryKey} ${source.rationale}`.toLowerCase();
+      const items = randomizedSources.filter((source) => {
+        const matchesCategory = !categoryValue || source.categoryKeys.includes(categoryValue);
+        const text = `${source.name} ${source.domain} ${source.category} ${source.categoryKey} ${source.categoryKeys.join(" ")} ${source.categoryLabels.join(" ")} ${source.rationale}`.toLowerCase();
         return matchesCategory && (!term || text.includes(term));
       });
       summary.textContent = `${items.length} of ${data.sourceCount} public entries · ${data.automatedCheckSourceCount} eligible for automatic checks after completed source-use review · Updated ${formatDate(data.updatedAt, { short: true })}`;

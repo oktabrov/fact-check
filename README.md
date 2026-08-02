@@ -6,7 +6,7 @@ Fact-Check is an evidence-led Media and Information Literacy platform. It helps 
 
 Fact-Check is independently built by Umrbek Oktyabrov for the UNICEF Youth Hackathon 2026. It is not affiliated with or endorsed by UNICEF.
 
-`Registry v5` means the fifth recorded state of the public source boundary. It is an audit/version identifier for reproducibility, not an accuracy score, model version, or count of sources.
+`Registry v10` means the tenth recorded state of the public source boundary. It is an audit/version identifier for reproducibility, not an accuracy score, model version, or count of sources.
 
 ## How verification works
 
@@ -15,13 +15,13 @@ Fact-Check protects verification with an account gate, then separates routing fr
 1. **Account gate** — A signed-in member or administrator is required before `/api/check` accepts a request. The server rejects unauthenticated requests before parsing their body or calling AI.
 2. **Category routing** — A first OpenAI request receives the claim and the fixed source taxonomy. It selects the smallest relevant set of source categories. This request has no web-search tool and cannot return a verdict.
 3. **Restricted evidence search** — A separate OpenAI request receives only domains with a completed source-use review in the selected categories. Its web search is restricted by an allowed-domain boundary, then all returned citations are validated server-side.
-4. **Short, inspectable result** — The platform displays a concise original-language paraphrase, categories used, source count, direct citation links and titles, and check time. It does not expose search-provider excerpts.
+4. **Clear, inspectable result** — The platform returns a concise final evidence verdict (supported, contradicted, misleading, mixed, or insufficient), a direct original-language answer, categories used, and check time. A completed verdict shows only validated citation links used for that answer. If the selected sources do not provide enough information, it returns an insufficient-evidence message and no source links. It does not expose search-provider excerpts.
 
 For example, a question about whether cash can be used in Uzbekistan is routed to **Economy and finance** and **Government and law** before it can search evidence. It does not search unrelated weather, health, social-media, or open-web sources.
 
 ## Trusted-source governance
 
-The public registry seeds **235 first-party entries** across ten categories. As of the v5 audit, **20 entries** have a completed source-use review with a documented official terms or licence link. The other **215 entries** remain publicly visible for transparency but are **not eligible for automatic evidence search** until their source-use review is completed.
+The public registry seeds **305 first-party entries** across fourteen categories. As of the v10 audit, **110 entries** have a completed source-use review with a documented official terms or licence link. The other **195 entries** remain publicly visible for transparency but are **not eligible for automatic evidence search** until their source-use review is completed.
 
 - International institutions
 - Government and law
@@ -31,10 +31,14 @@ The public registry seeds **235 first-party entries** across ten categories. As 
 - Science and environment
 - Elections and civic information
 - Cyber and digital safety
+- Companies and products
+- Games and interactive entertainment
+- Sports and entertainment
+- News and current affairs
 - Fact-checking and verification
 - Public-interest journalism
 
-The registry includes first-party official sources, including Uzbekistan's Government Portal, Lex.uz, Central Bank, Statistics Agency, and Central Election Commission alongside international public authorities. Being listed does not itself make a source eligible for automatic search.
+The registry includes first-party official sources, including Uzbekistan's Government Portal, Lex.uz, Central Bank, Statistics Agency, and Central Election Commission alongside international public authorities. It also includes official company newsrooms such as Rockstar Games, Microsoft, Nintendo, PlayStation, and Xbox; official sports and entertainment bodies; and established newsrooms for time-sensitive reporting. A source can belong to multiple relevant categories: Rockstar Games, for example, remains in **Companies and products** and is also available under **Games and interactive entertainment**. Category totals therefore overlap, while the 305-entry registry total remains unique. Being listed does not itself make a source eligible for automatic search.
 
 New administrator submissions are handled as a source-admission workflow:
 

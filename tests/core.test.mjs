@@ -3,6 +3,7 @@ import test from "node:test";
 import { newDb } from "pg-mem";
 import { bootstrapEnvironmentAdministrator, createAuth, createUserAuth } from "../lib/auth.mjs";
 import { runMigrations } from "../lib/migrations.mjs";
+import { checkClaimWithOpenAI } from "../lib/openai.mjs";
 import { trustedSourcesPdf } from "../lib/pdf.mjs";
 import { seedTrustedSources } from "../lib/seed.mjs";
 import { createSourceStore, selectSourcesForCategories } from "../lib/store.mjs";
@@ -55,17 +56,18 @@ test("PostgreSQL source registry preserves the trusted-domain boundary", async (
   }
 });
 
-test("PostgreSQL migration seeds the categorized 235-source public registry once", async () => {
+test("PostgreSQL migration seeds the categorized 305-source public registry once", async () => {
   const pool = await testDatabase();
   try {
     const firstSeed = await seedTrustedSources(pool);
     const secondSeed = await seedTrustedSources(pool);
     const snapshot = await createSourceStore(pool).snapshot();
-    assert.equal(firstSeed.seeded, 235);
+    assert.equal(firstSeed.seeded, 305);
+    assert.equal(firstSeed.secondaryCategories, 15);
     assert.equal(secondSeed.skipped, true);
-    assert.equal(snapshot.sources.length, 235);
-    assert.equal(snapshot.version, 5);
-    assert.equal((await createSourceStore(pool).activeDomains()).length, 235);
+    assert.equal(snapshot.sources.length, 305);
+    assert.equal(snapshot.version, 10);
+    assert.equal((await createSourceStore(pool).activeDomains()).length, 302);
     assert.equal(snapshot.sources.find((source) => source.id === "src-106").categoryKey, "economy-and-finance");
     assert.ok(snapshot.sources.some((source) => source.categoryKey === "weather-and-emergencies"));
     const reviewedSource = snapshot.sources.find((source) => source.id === "src-215");
@@ -80,8 +82,33 @@ test("PostgreSQL migration seeds the categorized 235-source public registry once
       ["reviewed-link-and-citation", "reviewed-open-license"].includes(source.usageStatus)
       && source.usagePolicyUrl
     ));
-    assert.equal(automatedCheckSources.length, 20);
+    assert.equal(automatedCheckSources.length, 110);
+    const categoriesWithoutReviewedSource = [...new Set(snapshot.sources.flatMap((source) => source.categoryKeys))]
+      .filter((categoryKey) => !automatedCheckSources.some((source) => source.categoryKeys.includes(categoryKey)));
+    assert.deepEqual(categoriesWithoutReviewedSource, []);
+    assert.deepEqual(
+      {
+        usageStatus: snapshot.sources.find((source) => source.id === "src-028")?.usageStatus,
+        usagePolicyUrl: snapshot.sources.find((source) => source.id === "src-029")?.usagePolicyUrl,
+      },
+      {
+        usageStatus: "reviewed-link-and-citation",
+        usagePolicyUrl: "https://www.weather.gov/disclaimer",
+      },
+    );
     assert.equal(snapshot.sources.find((source) => source.id === "src-220")?.usageStatus, "legacy-review-pending");
+    assert.deepEqual(
+      {
+        categoryKey: snapshot.sources.find((source) => source.id === "src-236")?.categoryKey,
+        categoryKeys: snapshot.sources.find((source) => source.id === "src-236")?.categoryKeys,
+        categoryKeyForNews: snapshot.sources.find((source) => source.id === "src-280")?.categoryKey,
+      },
+      {
+        categoryKey: "companies-and-products",
+        categoryKeys: ["companies-and-products", "games-and-interactive-entertainment"],
+        categoryKeyForNews: "news-and-current-affairs",
+      },
+    );
   } finally {
     await pool.end();
   }
@@ -98,6 +125,57 @@ test("generated trusted-source PDF has a valid PDF header", () => {
   assert.ok(pdf.toString("latin1").includes("Published source terms"));
 });
 
+test("evidence searches require a structured final answer and omit citations for insufficient evidence", async () => {
+  const originalFetch = globalThis.fetch;
+  const citation = {
+    type: "url_citation",
+    url_citation: { url: "https://www.nhc.noaa.gov/archive/", title: "NHC archive" },
+  };
+  const responseFor = (verdict, answer) => ({
+    ok: true,
+    json: async () => ({
+      output_text: JSON.stringify({ verdict, answer }),
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ verdict, answer }), annotations: [citation] }] }],
+    }),
+  });
+  const queuedResponses = [
+    responseFor("CONTRADICTED", "No. The official record does not report the claimed landfall."),
+    responseFor("INSUFFICIENT", "There is not enough reliable information in the selected sources to verify this claim."),
+  ];
+  let requestBody;
+  globalThis.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return queuedResponses.shift();
+  };
+
+  const arguments_ = {
+    apiKey: "test-key",
+    model: "test-model",
+    claim: "Did a hurricane make landfall in the United States yesterday?",
+    domains: ["nhc.noaa.gov"],
+    sources: [{ name: "US National Hurricane Center", url: "https://www.nhc.noaa.gov/", domain: "nhc.noaa.gov", category: "Weather and emergencies" }],
+    isApprovedUrl: (url) => url === "https://www.nhc.noaa.gov/archive/",
+    sourceLabelForUrl: () => "US National Hurricane Center",
+  };
+
+  try {
+    const contradicted = await checkClaimWithOpenAI(arguments_);
+    assert.equal(requestBody.text.format.name, "claim_evidence_verdict");
+    assert.equal(requestBody.text.format.strict, true);
+    assert.deepEqual(requestBody.text.format.schema.required, ["verdict", "answer"]);
+    assert.equal(contradicted.verdict, "CONTRADICTED");
+    assert.equal(contradicted.answer, "No. The official record does not report the claimed landfall.");
+    assert.deepEqual(contradicted.sources, [{ url: "https://www.nhc.noaa.gov/archive/", title: "NHC archive" }]);
+
+    const insufficient = await checkClaimWithOpenAI(arguments_);
+    assert.equal(insufficient.verdict, "INSUFFICIENT");
+    assert.equal(insufficient.answer, "There is not enough reliable information in the selected sources to verify this claim.");
+    assert.deepEqual(insufficient.sources, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("category selection keeps each evidence search inside selected source categories", async () => {
   const pool = await testDatabase({ seed: true });
   try {
@@ -105,8 +183,24 @@ test("category selection keeps each evidence search inside selected source categ
     const selection = selectSourcesForCategories(snapshot.sources, ["economy-and-finance", "government-and-law"]);
     assert.ok(selection.domains.includes("cbu.uz"));
     assert.ok(selection.sources.length > 0);
-    assert.ok(selection.sources.every((source) => ["economy-and-finance", "government-and-law"].includes(source.categoryKey)));
+    assert.ok(selection.sources.every((source) => source.categoryKeys.some((key) => ["economy-and-finance", "government-and-law"].includes(key))));
     assert.ok(selection.domains.length <= 100);
+  } finally {
+    await pool.end();
+  }
+});
+
+test("secondary source categories include Rockstar in games without duplicating its domain", async () => {
+  const pool = await testDatabase({ seed: true });
+  try {
+    const snapshot = await createSourceStore(pool).snapshot();
+    const games = selectSourcesForCategories(snapshot.sources, ["games-and-interactive-entertainment"]);
+    assert.ok(games.domains.includes("rockstargames.com"));
+    assert.equal(games.sources.filter((source) => source.id === "src-236").length, 1);
+
+    const combined = selectSourcesForCategories(snapshot.sources, ["companies-and-products", "games-and-interactive-entertainment"]);
+    assert.equal(combined.sources.filter((source) => source.id === "src-236").length, 1);
+    assert.equal(combined.domains.filter((domain) => domain === "rockstargames.com").length, 1);
   } finally {
     await pool.end();
   }
@@ -206,16 +300,21 @@ test("public user sessions cannot access administrator routes", async () => {
   try {
     const sourceResponse = await fetch(baseUrl + "/api/sources");
     const sourceData = await sourceResponse.json();
-    assert.equal(sourceData.sourceCount, 235);
-    assert.equal(sourceData.automatedCheckSourceCount, 20);
-    assert.equal(sourceData.automatedCheckDomainCount, 20);
-    assert.equal(sourceData.categoryCounts.length, 10);
+    assert.equal(sourceData.sourceCount, 305);
+    assert.equal(sourceData.automatedCheckSourceCount, 110);
+    assert.equal(sourceData.automatedCheckDomainCount, 110);
+    assert.equal(sourceData.categoryCounts.length, 14);
+    const gamesResponse = await fetch(baseUrl + "/api/sources?category=games-and-interactive-entertainment");
+    const gamesData = await gamesResponse.json();
+    assert.equal(gamesResponse.status, 200);
+    assert.equal(gamesData.sources.length, 15);
+    assert.deepEqual(gamesData.sources.find((source) => source.id === "src-236")?.categoryKeys, ["companies-and-products", "games-and-interactive-entertainment"]);
 
     const healthResponse = await fetch(baseUrl + "/api/health");
     assert.equal(healthResponse.status, 200);
     assert.deepEqual(
       (await healthResponse.json()).automatedCheckSources,
-      20,
+      110,
     );
     const healthHeadResponse = await fetch(baseUrl + "/api/health", { method: "HEAD" });
     assert.equal(healthHeadResponse.status, 200);
@@ -387,6 +486,7 @@ test("claim checks classify categories before a separate restricted evidence req
     assert.equal(evidenceArguments.domains.includes("cbu.uz"), false);
     assert.ok(evidenceArguments.sources.every((source) => ["economy-and-finance", "government-and-law"].includes(source.categoryKey)));
     assert.ok(evidenceArguments.sources.every((source) => source.usageStatus !== "legacy-review-pending" && source.usagePolicyUrl));
+    assert.equal(body.answer, "Selected official sources confirm the relevant rule.");
     assert.equal(body.explanation, "Selected official sources confirm the relevant rule.");
     assert.deepEqual(body.sources, [{ url: "https://data.gov/dataset/example", title: "Data.gov" }]);
   } finally {
@@ -397,6 +497,9 @@ test("claim checks classify categories before a separate restricted evidence req
 
 test("claim checks stop with insufficient evidence when a selected category has no completed source-use review", async () => {
   const pool = await testDatabase({ seed: true });
+  await pool.query(
+    "UPDATE trusted_sources SET usage_status = 'legacy-review-pending', usage_policy_url = NULL, usage_review_note = NULL, usage_reviewed_at = NULL WHERE category_key = 'international-institutions'",
+  );
   const events = [];
   const userAuth = createUserAuth({ pool });
   const signedIn = await userAuth.signup({
@@ -417,7 +520,7 @@ test("claim checks stop with insufficient evidence when a selected category has 
     },
     classifyClaimCategories: async () => {
       events.push("classify");
-      return { categoryKeys: ["weather-and-emergencies"], reason: "The claim concerns an emergency event." };
+      return { categoryKeys: ["international-institutions"], reason: "The claim concerns an intergovernmental institution." };
     },
     checkClaimWithOpenAI: async () => {
       events.push("check");
@@ -430,15 +533,83 @@ test("claim checks stop with insufficient evidence when a selected category has 
     const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: "fact_check_user=" + signedIn.token },
-      body: JSON.stringify({ claim: "Will the storm reach the capital tomorrow?" }),
+      body: JSON.stringify({ claim: "Did an intergovernmental institution publish this report?" }),
     });
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.deepEqual(events, ["classify"]);
     assert.equal(body.verdict, "INSUFFICIENT");
-    assert.match(body.explanation, /completed source-use review/i);
+    assert.match(body.answer, /not enough eligible source information/i);
+    assert.match(body.explanation, /not enough eligible source information/i);
     assert.equal(body.categorySelection.selectedSourceCount, 0);
     assert.equal(body.categorySelection.selectedDomainCount, 0);
+    assert.deepEqual(body.sources, []);
+  } finally {
+    await new Promise((resolve) => app.close(resolve));
+    await pool.end();
+  }
+});
+
+test("U.S. hurricane claims hide citations when selected evidence is insufficient", async () => {
+  const pool = await testDatabase({ seed: true });
+  const events = [];
+  let evidenceArguments;
+  const userAuth = createUserAuth({ pool });
+  const signedIn = await userAuth.signup({
+    name: "Amina Karimova",
+    email: "amina@example.com",
+    password: "a-long-user-test-password",
+  });
+  const app = createApp({
+    pool,
+    userAuth,
+    config: {
+      apiKey: "test-key",
+      adminEmail: TEST_ADMIN_EMAIL,
+      adminPassword: TEST_ADMIN_PASSWORD,
+      model: "test-model",
+      nodeEnv: "test",
+      port: 0,
+    },
+    classifyClaimCategories: async () => {
+      events.push("classify");
+      return { categoryKeys: ["weather-and-emergencies"], reason: "The claim concerns a hurricane landfall." };
+    },
+    checkClaimWithOpenAI: async (arguments_) => {
+      events.push("check");
+      evidenceArguments = arguments_;
+      assert.equal(arguments_.isApprovedUrl("https://www.nhc.noaa.gov/archive/"), true);
+      assert.equal(arguments_.isApprovedUrl("https://www.weather.gov/"), true);
+      assert.equal(arguments_.isApprovedUrl("https://www.noaa.gov/"), true);
+      assert.equal(arguments_.isApprovedUrl("https://www.usgs.gov/"), true);
+      assert.equal(arguments_.isApprovedUrl("https://www.jma.go.jp/jma/indexe.html"), true);
+      return {
+        verdict: "INSUFFICIENT",
+        explanation: "The selected sources do not provide enough evidence.",
+        sources: [{ url: "https://www.nhc.noaa.gov/archive/", title: "NHC archive" }],
+        checkedAt: "2026-08-02T00:00:00.000Z",
+        model: "test-model",
+      };
+    },
+  });
+  await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
+  const port = app.address().port;
+  try {
+    const response = await fetch("http://127.0.0.1:" + port + "/api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: "fact_check_user=" + signedIn.token },
+      body: JSON.stringify({ claim: "Did a hurricane make landfall in the United States yesterday?" }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(events, ["classify", "check"]);
+    assert.equal(body.categorySelection.selectedSourceCount, 5);
+    assert.equal(body.categorySelection.selectedDomainCount, 5);
+    assert.deepEqual(new Set(evidenceArguments.domains), new Set([
+      "nhc.noaa.gov", "weather.gov", "usgs.gov", "jma.go.jp", "noaa.gov",
+    ]));
+    assert.equal(body.verdict, "INSUFFICIENT");
+    assert.equal(body.answer, "There is not enough reliable information in the selected sources to verify this claim.");
     assert.deepEqual(body.sources, []);
   } finally {
     await new Promise((resolve) => app.close(resolve));
