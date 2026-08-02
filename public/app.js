@@ -279,7 +279,7 @@ function renderHome() {
 
     <section class="section section-tint"><div class="page">
       <div class="stat-grid reveal">
-        <article class="stat-card"><strong data-source-count>305</strong><span>listed sources to inspect</span></article>
+        <article class="stat-card"><strong data-source-count>110</strong><span>listed sources to inspect</span></article>
         <article class="stat-card"><strong>0</strong><span>unlisted domains used in checks</span></article>
         <article class="stat-card"><strong>5</strong><span>careful evidence outcomes</span></article>
       </div>
@@ -548,7 +548,7 @@ function shuffleSources(sources) {
 }
 
 function renderSources() {
-  app.innerHTML = `${pageHead("Source Library", "A visible evidence boundary. <em>Organized by purpose.</em>", "Browse the public source registry. Only entries with a completed source-use review are eligible for automatic evidence search; pending entries remain visible for transparency.")}
+  app.innerHTML = `${pageHead("Source Library", "A visible evidence boundary. <em>Organized by purpose.</em>", "Browse the public source registry. Every listed entry has a completed source-use review and is eligible for automatic evidence search when its category is selected.")}
     <section class="page">
       <div class="source-library-policy glass-card reveal"><span class="mini-label">Source-use safeguard</span><p>Automatic checks use only first-party domains with a completed source-use review and an official terms or licence link. Fact-Check links to original material and returns short original-language summaries; it does not republish source text, images, logos, or database copies. A completed review is not a blanket licence for every item on a domain.</p></div>
       <div class="directory-tools reveal"><input id="source-search" type="search" placeholder="Search a source, category, or authority" aria-label="Search trusted sources" /><select id="source-category" aria-label="Filter sources by category"><option value="">All categories</option></select><a class="btn btn-secondary" href="/api/sources.pdf">↓ Download PDF list</a></div>

@@ -56,19 +56,19 @@ test("PostgreSQL source registry preserves the trusted-domain boundary", async (
   }
 });
 
-test("PostgreSQL migration seeds the categorized 305-source public registry once", async () => {
+test("PostgreSQL migration seeds the reviewed 110-source public registry once", async () => {
   const pool = await testDatabase();
   try {
     const firstSeed = await seedTrustedSources(pool);
     const secondSeed = await seedTrustedSources(pool);
     const snapshot = await createSourceStore(pool).snapshot();
-    assert.equal(firstSeed.seeded, 305);
+    assert.equal(firstSeed.seeded, 110);
     assert.equal(firstSeed.secondaryCategories, 15);
     assert.equal(secondSeed.skipped, true);
-    assert.equal(snapshot.sources.length, 305);
-    assert.equal(snapshot.version, 10);
-    assert.equal((await createSourceStore(pool).activeDomains()).length, 302);
-    assert.equal(snapshot.sources.find((source) => source.id === "src-106").categoryKey, "economy-and-finance");
+    assert.equal(snapshot.sources.length, 110);
+    assert.equal(snapshot.version, 11);
+    assert.equal((await createSourceStore(pool).activeDomains()).length, 110);
+    assert.equal(snapshot.sources.find((source) => source.id === "src-222").categoryKey, "economy-and-finance");
     assert.ok(snapshot.sources.some((source) => source.categoryKey === "weather-and-emergencies"));
     const reviewedSource = snapshot.sources.find((source) => source.id === "src-215");
     assert.deepEqual(
@@ -96,7 +96,7 @@ test("PostgreSQL migration seeds the categorized 305-source public registry once
         usagePolicyUrl: "https://www.weather.gov/disclaimer",
       },
     );
-    assert.equal(snapshot.sources.find((source) => source.id === "src-220")?.usageStatus, "legacy-review-pending");
+    assert.equal(snapshot.sources.some((source) => source.usageStatus === "legacy-review-pending"), false);
     assert.deepEqual(
       {
         categoryKey: snapshot.sources.find((source) => source.id === "src-236")?.categoryKey,
@@ -181,7 +181,7 @@ test("category selection keeps each evidence search inside selected source categ
   try {
     const snapshot = await createSourceStore(pool).snapshot();
     const selection = selectSourcesForCategories(snapshot.sources, ["economy-and-finance", "government-and-law"]);
-    assert.ok(selection.domains.includes("cbu.uz"));
+    assert.ok(selection.domains.includes("data.gov"));
     assert.ok(selection.sources.length > 0);
     assert.ok(selection.sources.every((source) => source.categoryKeys.some((key) => ["economy-and-finance", "government-and-law"].includes(key))));
     assert.ok(selection.domains.length <= 100);
@@ -300,7 +300,7 @@ test("public user sessions cannot access administrator routes", async () => {
   try {
     const sourceResponse = await fetch(baseUrl + "/api/sources");
     const sourceData = await sourceResponse.json();
-    assert.equal(sourceData.sourceCount, 305);
+    assert.equal(sourceData.sourceCount, 110);
     assert.equal(sourceData.automatedCheckSourceCount, 110);
     assert.equal(sourceData.automatedCheckDomainCount, 110);
     assert.equal(sourceData.categoryCounts.length, 14);

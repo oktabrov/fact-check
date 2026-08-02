@@ -6,7 +6,7 @@ Fact-Check is an evidence-led Media and Information Literacy platform. It helps 
 
 Fact-Check is independently built by Umrbek Oktyabrov for the UNICEF Youth Hackathon 2026. It is not affiliated with or endorsed by UNICEF.
 
-`Registry v10` means the tenth recorded state of the public source boundary. It is an audit/version identifier for reproducibility, not an accuracy score, model version, or count of sources.
+`Registry v11` means the eleventh recorded state of the public source boundary. It is an audit/version identifier for reproducibility, not an accuracy score, model version, or count of sources.
 
 ## How verification works
 
@@ -21,7 +21,7 @@ For example, a question about whether cash can be used in Uzbekistan is routed t
 
 ## Trusted-source governance
 
-The public registry seeds **305 first-party entries** across fourteen categories. As of the v10 audit, **110 entries** have a completed source-use review with a documented official terms or licence link. The other **195 entries** remain publicly visible for transparency but are **not eligible for automatic evidence search** until their source-use review is completed.
+The public registry seeds **110 first-party entries** across fourteen categories. Every listed entry has a completed source-use review with a documented official terms or licence link and is eligible for automatic evidence search when its category is selected. Sources without that review are removed from the public registry rather than displayed as unusable entries.
 
 - International institutions
 - Government and law
@@ -38,7 +38,7 @@ The public registry seeds **305 first-party entries** across fourteen categories
 - Fact-checking and verification
 - Public-interest journalism
 
-The registry includes first-party official sources, including Uzbekistan's Government Portal, Lex.uz, Central Bank, Statistics Agency, and Central Election Commission alongside international public authorities. It also includes official company newsrooms such as Rockstar Games, Microsoft, Nintendo, PlayStation, and Xbox; official sports and entertainment bodies; and established newsrooms for time-sensitive reporting. A source can belong to multiple relevant categories: Rockstar Games, for example, remains in **Companies and products** and is also available under **Games and interactive entertainment**. Category totals therefore overlap, while the 305-entry registry total remains unique. Being listed does not itself make a source eligible for automatic search.
+The registry includes first-party official sources, including Uzbekistan's Government Portal, Lex.uz, Central Bank, Statistics Agency, and Central Election Commission alongside international public authorities. It also includes official company newsrooms such as Rockstar Games, Microsoft, Nintendo, PlayStation, and Xbox; official sports and entertainment bodies; and established newsrooms for time-sensitive reporting. A source can belong to multiple relevant categories: Rockstar Games, for example, remains in **Companies and products** and is also available under **Games and interactive entertainment**. Category totals therefore overlap, while the 110-entry registry total remains unique.
 
 New administrator submissions are handled as a source-admission workflow:
 
@@ -55,7 +55,7 @@ Fact-Check is an evidence-navigation platform, not a content mirror. It links to
 
 Every new source must have an official policy or licence URL before it can be admitted. The public directory and its downloadable PDF show that URL when the review is complete. This is a documented, conservative source-use review — not legal advice, permission to copy a whole domain, or a claim that every page has the same permissions.
 
-Content-reuse terms and permission for automated access are separate questions. Before enabling any source for automatic evidence search, confirm its current terms, robots/access rules where relevant, licence scope, and the law that applies to the deployment. If those terms are unclear or prohibit the use, keep the source review pending and do not use it automatically.
+Content-reuse terms and permission for automated access are separate questions. Before enabling any source for automatic evidence search, confirm its current terms, robots/access rules where relevant, licence scope, and the law that applies to the deployment. If those terms are unclear or prohibit the use, do not add that source to the public registry.
 
 Social platforms such as Telegram, Facebook, Instagram, X, TikTok, and YouTube are intentionally excluded from the automated registry. An allowed-domain filter for a platform would authorize every account on that platform, not only an official channel.
 

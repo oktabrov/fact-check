@@ -109,13 +109,15 @@ function isAssetRequest(pathname) {
 }
 
 function activeSourcesFromSnapshot(snapshot) {
-  return snapshot.sources.filter((source) => source.active);
+  return snapshot.sources.filter((source) => (
+    source.active
+    && REVIEWED_USAGE_STATUSES.has(source.usageStatus)
+    && Boolean(source.usagePolicyUrl)
+  ));
 }
 
 function automatedCheckSourcesFromSnapshot(snapshot) {
-  return activeSourcesFromSnapshot(snapshot).filter((source) => (
-    REVIEWED_USAGE_STATUSES.has(source.usageStatus) && Boolean(source.usagePolicyUrl)
-  ));
+  return activeSourcesFromSnapshot(snapshot);
 }
 
 function domainsFromSources(sources) {
